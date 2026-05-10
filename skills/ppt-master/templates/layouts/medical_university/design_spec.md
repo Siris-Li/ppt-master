@@ -257,7 +257,7 @@ To adapt to other medical institution branding, replace the corresponding values
 ### 1. Copy Template to Project
 
 ```bash
-cp templates/layouts/medical_university/* projects/<project>/templates/
+cp templates/layouts/medical_university/* ./.claude/ppt-master/projects/<project>/templates/
 ```
 
 ### 2. Logo Placement Guidelines

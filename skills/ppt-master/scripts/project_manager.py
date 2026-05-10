@@ -2,7 +2,7 @@
 """PPT Master project management helpers.
 
 Usage:
-    python3 scripts/project_manager.py init <project_name> [--format ppt169] [--dir projects]
+    python3 scripts/project_manager.py init <project_name> [--format ppt169] [--dir .claude/ppt-master/projects]
     python3 scripts/project_manager.py import-sources <project_path> <source1> [<source2> ...] [--move | --copy]
     python3 scripts/project_manager.py validate <project_path>
     python3 scripts/project_manager.py info <project_path>
@@ -107,7 +107,7 @@ class ProjectManager:
 
     CANVAS_FORMATS = CANVAS_FORMATS
 
-    def __init__(self, base_dir: str = "projects") -> None:
+    def __init__(self, base_dir: str = ".claude/ppt-master/projects") -> None:
         self.base_dir = Path(base_dir)
 
     def init_project(
@@ -629,7 +629,7 @@ def parse_init_args(argv: list[str]) -> tuple[str, str, str]:
 
     project_name = argv[2]
     canvas_format = "ppt169"
-    base_dir = "projects"
+    base_dir = ".claude/ppt-master/projects"
 
     i = 3
     while i < len(argv):
