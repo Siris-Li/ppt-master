@@ -183,7 +183,7 @@ Templates use `{{PLACEHOLDER}}` format to mark replaceable content:
 
 To use a template, give the AI an explicit directory path in your initial message — e.g. "用 `skills/ppt-master/templates/layouts/academic_defense/` 这个模板做……". The Step 3 logic copies that directory's SVGs + `design_spec.md` + assets into your project before Strategist starts.
 
-The directory does not have to live under `templates/layouts/`. A template kept in `./.claude/ppt-master/projects/<other_project>/template/` or any other location works the same way as long as you give the path.
+The directory does not have to live under `templates/layouts/`. A template kept in `./.skill/ppt-master/projects/<other_project>/template/` or any other location works the same way as long as you give the path.
 
 After the copy:
 

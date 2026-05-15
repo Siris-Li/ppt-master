@@ -14,9 +14,9 @@ The user opens a new chat and gives a phrase that names a project path and signa
 
 | Pattern | Example |
 |---|---|
-| "继续生成 .claude/ppt-master/projects/<project_name>" | "继续生成 .claude/ppt-master/projects/ppt169_joe_hisaishi" |
-| "resume execution .claude/ppt-master/projects/<project_name>" | "resume execution .claude/ppt-master/projects/ppt169_joe_hisaishi" |
-| Project path + any "继续 / 恢复 / 继续做 / 接着做" semantic | "把 .claude/ppt-master/projects/ppt169_joe_hisaishi 继续做完" |
+| "继续生成 .skill/ppt-master/projects/<project_name>" | "继续生成 .skill/ppt-master/projects/ppt169_joe_hisaishi" |
+| "resume execution .skill/ppt-master/projects/<project_name>" | "resume execution .skill/ppt-master/projects/ppt169_joe_hisaishi" |
+| Project path + any "继续 / 恢复 / 继续做 / 接着做" semantic | "把 .skill/ppt-master/projects/ppt169_joe_hisaishi 继续做完" |
 
 **Prerequisite**: Phase A must have completed in the named project. Verified by file presence in Step 1; do NOT auto-trigger Phase A on missing state.
 
