@@ -20,8 +20,21 @@
 - text: #......
 - text_secondary: #......
 - border: #......
+- image_rendering: vector-illustration
+- image_palette: cool-corporate
 
 > Strategist: fill only colors actually used. Add extra rows as needed; delete unused rows rather than leave as `#......`.
+>
+> **`image_rendering` and `image_palette`** — required only when `images` section below contains `ai`-sourced files. Values MUST be valid names from `references/image-renderings/_index.md` and `references/image-palettes/_index.md`, **or** the literal string `custom`. Image_Generator reads these and applies them deck-wide. Omit both rows when the deck has no AI-generated images.
+>
+> **`custom` escape hatch.** When set to `custom`, add a sibling `*_behavior` row carrying a one-paragraph prose description. Image_Generator splices the prose into the prompt in place of the preset file's fewshot snippet. Tail-case only — see [`image-renderings/_index.md`](../references/image-renderings/_index.md) §1.5 / [`image-palettes/_index.md`](../references/image-palettes/_index.md) §2 for invocation rules.
+>
+> ```
+> - image_rendering: custom
+> - image_rendering_behavior: "Hand-screened poster aesthetic — slightly misregistered halftone overlays, 3 flat ink colors with visible dot pattern at 12% opacity, no gradients, no anti-aliased edges; reads as silkscreen print."
+> - image_palette: custom
+> - image_palette_behavior: "Primary deep aubergine `#4C1D95` anchors ~35% of canvas; secondary warm cream `#FEF3C7` carries ~55% as breathing field; accent burnished gold `#D4AF37` in 5-10% as ceremonial accents. No fourth color."
+> ```
 
 ## typography
 - font_family: "Microsoft YaHei", Arial, sans-serif
@@ -110,7 +123,7 @@
 ## page_charts
 - P05: bar_chart
 - P09: timeline_horizontal
-- P12: bcg_matrix
+- P12: quadrant_bubble_scatter
 
 > One entry per page **that adapts a `templates/charts/` chart template**. Key: `P<NN>` matching §IX. Value: chart template basename without `.svg` (must match a key in `templates/charts/charts_index.json`).
 >
