@@ -7,13 +7,13 @@ PPT Master 导出的 PPTX 同时支持**页间转场**（page transition）与**
 | 层级 | 默认 | 原因 |
 |---|---|---|
 | 页间转场 | `fade`，0.4 秒 | 适合大多数 deck 的中性基线 |
-| 页内元素动画 | `auto` 效果 + `after-previous` 触发，0.4 秒时长 + 0.5 秒间隔 | 根据每个 group 的 SVG id 映射效果：信息密集元素稳定映射（chart→wipe、card-/step-/pillar-→fly、title/takeaway→fade），图片类 id（`hero` / `figure-` / `image` / `img-` / `kpi`）在更丰富的视觉池（zoom / dissolve / circle / box / diamond / wheel）中循环以产生 deck 内变化，未命中的 id 在 fade/wipe/fly/zoom 间循环。进入页面后元素自动级联入场，零交互即可看到完整动画过程 |
+| 页内元素动画 | **`none`（关闭）** | 翻到一页时整页一次性呈现。元素一个个自动级联出来是「AI 味」最重的信号，且没人主动要，所以页内动画改为按需开启。用 `-a auto`（或其它效果）开启：根据每个 group 的 SVG id 映射效果（chart→wipe、card-/step-/pillar-→fly、title/takeaway→fade），图片类 id（`hero` / `figure-` / `image` / `img-` / `kpi`）在更丰富的视觉池（zoom / dissolve / circle / box / diamond / wheel）中循环以产生 deck 内变化，未命中的 id 在 fade/wipe/fly/zoom 间循环 |
 
-修改设置只需对同一份 `svg_output/`（或 `svg_final/`）重跑 `svg_to_pptx.py`，无需重新跑 LLM。如要彻底关闭页内动画，加 `-a none`。
+修改设置只需对同一份 `svg_output/` 重跑 `svg_to_pptx.py`，无需重新跑 LLM。`-s final` 只保留给诊断对比，不能作为受支持的发布源。如要为整份 deck 开启页内动画，加 `-a auto`。
 
 ## 对象级自定义动画
 
-默认动画是全局策略。若需要更具体的演示节奏，例如标题先淡入、图表第二个出现、关键注释最后飞入，可以使用可选的 `animations.json` sidecar。SVG 仍然只保存静态视觉结构；sidecar 只控制 PPTX 导出动画。
+页内元素动画默认关闭。为整份 deck 开启只需导出时加 `-a auto`（无需配置文件）。若需要更具体的演示节奏，例如标题先淡入、图表第二个出现、关键注释最后飞入，可以使用可选的 `animations.json` sidecar。SVG 仍然只保存静态视觉结构；sidecar 只控制 PPTX 导出动画。
 
 当用户要求调整动画顺序、效果、时长或具体对象出现方式时，运行独立 [`customize-animations`](../../skills/ppt-master/workflows/customize-animations.md) 工作流。
 
@@ -79,24 +79,24 @@ python3 skills/ppt-master/scripts/svg_to_pptx.py <project> --auto-advance 5
 
 ## 页内元素动画
 
-默认开启（`auto` 效果 + `after-previous` 触发）。共有三种 Start 模式，**与 PowerPoint 动画窗格的 Start 下拉菜单一一对应**：
+默认关闭——用 `-a auto`（或其它效果）为整份 deck 开启。开启后共有三种 Start 模式，**与 PowerPoint 动画窗格的 Start 下拉菜单一一对应**：
 
 - **`on-click`**（单击时）—— 进入页面 → 第一次点击显示第一个语义组，后续每次点击按 z-order 显示下一个组。适合现场演讲，演讲者控制节奏。与 `--recorded-narration` 互斥，因为带旁白的视频导出需要无点击播放。
 - **`with-previous`**（与上一动画同时）—— 所有组在进入页面时一起入场，并行播放各自的入场动画。`--animation-stagger` 不生效。
 - **`after-previous`**（默认，在上一动画之后）—— 第一组进入页面时入场，后续组在前一个结束后接着出现，并按 `--animation-stagger` 增加额外间隔。适合展厅循环、录屏走查，或者只是想看流动效果不想点击。
 
 ```bash
-# 默认即开启：auto 效果 + after-previous 触发，无需任何参数
+# 默认行为（无参数）：只有页间转场，没有页内元素动画
 python3 skills/ppt-master/scripts/svg_to_pptx.py <project>
 
-# 关闭页内动画
-python3 skills/ppt-master/scripts/svg_to_pptx.py <project> -a none
+# 为整份 deck 开启页内动画（auto 效果 + after-previous 自动级联）
+python3 skills/ppt-master/scripts/svg_to_pptx.py <project> -a auto
 
-# 改用单一效果（仍走默认的 after-previous 自动级联）
+# 开启并改用单一效果（走 after-previous 自动级联）
 python3 skills/ppt-master/scripts/svg_to_pptx.py <project> --animation fade
 
-# 改为单击触发（演讲者控制节奏）
-python3 skills/ppt-master/scripts/svg_to_pptx.py <project> --animation-trigger on-click
+# 开启并改为单击触发（演讲者控制节奏）
+python3 skills/ppt-master/scripts/svg_to_pptx.py <project> -a auto --animation-trigger on-click
 
 # 自定义节奏
 python3 skills/ppt-master/scripts/svg_to_pptx.py <project> --animation mixed \
@@ -108,7 +108,7 @@ python3 skills/ppt-master/scripts/svg_to_pptx.py <project> --animation-trigger w
 
 22 种单一效果：`appear`、`fade`、`fly`、`cut`、`zoom`、`wipe`、`split`、`blinds`、`checkerboard`、`dissolve`、`random_bars`、`peek`、`wheel`、`box`、`circle`、`diamond`、`plus`、`strips`、`wedge`、`stretch`、`expand`、`swivel`。再加三种自动模式：
 
-- `auto`（默认）—— 按 group 的 SVG id 映射效果。信息密集元素稳定映射：`chart` / `table` / `legend` / `timeline` / `track` → `wipe`；`card-*` / `pillar-*` / `item-*` / `step-*` / `stage-*` / `tier-*` / `principle-*` → `fly`；`title` / `chapter-*` / `section-*` / `cover-*` / `tagline` / `subtitle` → `fade`；`takeaway` / `callout` / `quote` / `source` / `conclusion` / `note` → `fade`。图片类 id `hero` / `figure-*` / `image` / `img-*` / `kpi` 则在更丰富的视觉池（`zoom` / `dissolve` / `circle` / `box` / `diamond` / `wheel`）中循环，使多张图片在 deck 内呈现不同入场。未命中的 id 在 `fade` / `wipe` / `fly` / `zoom` 之间循环。
+- `auto`（开启时推荐）—— 按 group 的 SVG id 映射效果。信息密集元素稳定映射：`chart` / `table` / `legend` / `timeline` / `track` → `wipe`；`card-*` / `pillar-*` / `item-*` / `step-*` / `stage-*` / `tier-*` / `principle-*` → `fly`；`title` / `chapter-*` / `section-*` / `cover-*` / `tagline` / `subtitle` → `fade`；`takeaway` / `callout` / `quote` / `source` / `conclusion` / `note` → `fade`。图片类 id `hero` / `figure-*` / `image` / `img-*` / `kpi` 则在更丰富的视觉池（`zoom` / `dissolve` / `circle` / `box` / `diamond` / `wheel`）中循环，使多张图片在 deck 内呈现不同入场。未命中的 id 在 `fade` / `wipe` / `fly` / `zoom` 之间循环。
 - `mixed`（旧逻辑）—— 确定性轮换。每页第一个动画组使用 `fade`，后续组在整份 deck 范围内按 16 效果池（`blinds` / `checkerboard` / `dissolve` / `fly` / `cut` / `random_bars` / `box` / `split` / `strips` / `wedge` / `wheel` / `wipe` / `expand` / `fade` / `swivel` / `zoom`）连续轮换。保留以兼容旧配置。
 - `random` —— 在旧的 16 效果池中随机抽取。
 
@@ -116,7 +116,7 @@ python3 skills/ppt-master/scripts/svg_to_pptx.py <project> --animation-trigger w
 
 参数：
 
-- `-a/--animation` — 效果名、`auto`、`mixed`、`random` 或 `none`。默认 `auto`。
+- `-a/--animation` — 效果名、`auto`、`mixed`、`random` 或 `none`。默认 `none`（页内动画关闭；用 `auto` 开启）。
 - `--animation-trigger` — Start 模式（与 PowerPoint 一致）：`on-click`、`with-previous`、`after-previous`（默认）。
 - `--animation-duration` — 单个元素入场秒数，默认 `0.4`。
 - `--animation-stagger` — `after-previous` 模式下两组之间的额外间隔（秒，默认 `0.5`）。其他模式忽略。
@@ -141,9 +141,9 @@ python3 skills/ppt-master/scripts/svg_to_pptx.py <project> --animation-trigger w
 
 ## 限制
 
-- **仅原生形状模式生效。** 页内动画需要可编辑形状作为锚点。`--only legacy` 模式每页一张大图，没有元素粒度，因此不响应 `-a/--animation`，只受 `-t/--transition` 影响。
+- **动画只写入原生 DrawingML PPTX。** 页间转场和页内元素动画都属于项目转换器从 `svg_output/` 生成的 PPTX；`svg_final/` 仍是静态视觉预览，不是带动画的替代 PPTX 路线。
 - **不同 Office 版本对元素动画存在轻微差异。** 实现走 `<p:animEffect filter=...>` 路径（而非 `presetID` 查找表），在 PowerPoint 2016+ 上表现一致；更老的 Office 可能把部分效果降级为 Appear。
-- **兼容模式的 PNG fallback 只用于显示。** 转场与动画都在 slide XML 里，不在 PNG 中；关掉兼容模式不影响两个动画层。
+- **手工 SVG 形状转换不受支持。** 把 `svg_final/` 页面作为 SVG 图片插入 PowerPoint，不会获得元素级动画锚点；需要可编辑且可动画的形状时，请使用原生 PPTX。
 
 ## 常用速查
 

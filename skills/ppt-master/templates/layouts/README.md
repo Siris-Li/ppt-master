@@ -1,6 +1,6 @@
 # Layout Templates
 
-**Layout = structure-only template.** Captures canvas, page structure, page types, and SVG roster — but **no identity segment** (color / typography / logo / voice / icon style). Layered identity comes from `templates/brands/` or is decided per-deck in Strategist's Eight Confirmations. For full-identity replicas of specific PPTs, see [`templates/decks/`](../decks/) instead.
+**Layout = structure-only template.** Captures canvas, page structure, page types, and SVG roster — but **no identity segment** (color / typography / logo / voice / icon style). Layered identity comes from `templates/brands/` or is decided per-deck in Strategist's confirmation stage. For full-identity replicas of specific PPTs, see [`templates/decks/`](../decks/) instead.
 
 Single source of truth for what layouts exist: [`layouts_index.json`](./layouts_index.json) (`layout_id → { summary, canvas_format, page_count, page_types }`). This README explains the kind; it does **not** enumerate layouts.
 
@@ -39,7 +39,7 @@ page_types: [cover, toc, chapter, content, ending]
 ## V. SVG Page Roster           # File list + per-file purpose
 ```
 
-Layouts may include additional supporting sections (Layout Patterns, Spacing Guidelines, SVG Technical Constraints, Placeholder Specification, Usage Notes). Do **not** include Color Scheme or Typography sections — those are identity-segment fields owned by `templates/brands/` and `templates/decks/`.
+Layouts may include additional supporting sections (Layout Patterns, Spacing Guidelines, Placeholder Specification, Usage Notes). Put a layout-specific required / forbidden / conditional boundary inside the personality section it qualifies. Do **not** include Color Scheme or Typography sections — those are identity-segment fields owned by `templates/brands/` and `templates/decks/`. General SVG/PPT authoring rules belong only in [`shared-standards.md`](../../references/shared-standards.md); do not add a generic technical-rules section or pointer to a layout spec.
 
 ---
 
@@ -84,6 +84,6 @@ The register step updates [`layouts_index.json`](./layouts_index.json) — the s
 
 ---
 
-## SVG technical constraints
+## SVG technical authority
 
-See [`shared-standards.md`](../../references/shared-standards.md) for the authoritative ban list (PPT incompatibilities, raw-character rules, clipPath conditional allowance, etc.). Layouts must comply.
+[`shared-standards.md`](../../references/shared-standards.md) is authoritative for general SVG/PPT required, forbidden, and conditional rules. Layout specs add only constraints unique to that layout.

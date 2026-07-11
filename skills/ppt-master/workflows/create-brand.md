@@ -6,7 +6,7 @@ description: Generate a brand-only template under `templates/brands/<id>/` — a
 
 > Standalone preset-creation workflow. Output is a brand template package at `skills/ppt-master/templates/brands/<brand_id>/`. Structurally a brand is a template minus the SVG page roster — Strategist locks the brand's color / typography / logo / voice as truth; Executor designs pages freely under those constraints.
 
-This workflow edits the global brand library, not any specific `projects/<x>/`. Consumption follows the same explicit-path rule as layout templates (see [Downstream consumption](#downstream-consumption-informational) at the end).
+This workflow edits the global brand library, not any specific `.skill/ppt-master/projects/<x>/`. Consumption follows the same explicit-path rule as layout templates (see [Downstream consumption](#downstream-consumption-informational) at the end).
 
 > Companion: [`create-template.md`](./create-template.md) generates full templates with SVG pages. Use `create-brand.md` when the user wants identity-only locking with free page layout.
 

@@ -20,7 +20,7 @@ This workflow is **independent**: it reads `notes/*.md` and queries the selected
   - MiniMax: `MINIMAX_API_KEY`
   - Qwen: `QWEN_API_KEY` or `DASHSCOPE_API_KEY`
   - CosyVoice: `COSYVOICE_API_KEY` or `DASHSCOPE_API_KEY`
-  - Keys may live in the current process environment or the first `.env` found in this order: current working directory, clone repo root, `~/.ppt-master/.env`
+  - Keys may live in the current process environment or the first `.env` found in this order: current working directory, skill directory (e.g. `~/.agents/skills/ppt-master/.env`), clone repo root, `~/.ppt-master/.env`
 - The deck is in a single dominant language (mixed-language decks: pick the dominant one — the AI uses judgment, not a heuristic).
 
 If `notes/*.md` are missing, run `total_md_split.py <project_path>` first.
@@ -149,7 +149,7 @@ python3 skills/ppt-master/scripts/svg_to_pptx.py <project_path> \
 
 If `notes_to_audio.py` errors with a missing dependency or missing provider API key, fix the prerequisite and re-run — do NOT swallow the error.
 
-`--recorded-narration audio` prepares PowerPoint's recorded timings and narrations: every slide must have a matching supported audio file, every duration must be readable by `ffprobe`, and object animations must not use `--animation-trigger on-click`. Use `after-previous` or `with-previous` for narrated/video export.
+`--recorded-narration audio` prepares PowerPoint's recorded timings and narrations: every slide must have a matching supported audio file, every duration must be readable by `ffprobe`, and object animations must not use `--animation-trigger on-click`. Use `after-previous` or `with-previous` for narrated/video export. The re-export is saved as `exports/<project_name>_<timestamp>_narrated.pptx`, telling it apart from silent exports.
 
 ---
 

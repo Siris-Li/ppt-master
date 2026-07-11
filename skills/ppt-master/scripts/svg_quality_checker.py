@@ -10,22 +10,25 @@ Usage:
     python3 scripts/svg_quality_checker.py --all examples
 """
 
+import copy
 import sys
 import re
 import json
 import html
 from pathlib import Path
 from typing import List, Dict, Tuple
-from collections import defaultdict
+from collections import Counter, defaultdict
 from xml.etree import ElementTree as ET
+
+from console_encoding import configure_utf8_stdio
+
+configure_utf8_stdio()
 
 try:
     from project_utils import CANVAS_FORMATS
-    from error_helper import ErrorHelper
 except ImportError:
-    print("Warning: Unable to import dependency modules")
+    print("Warning: Unable to import project_utils")
     CANVAS_FORMATS = {}
-    ErrorHelper = None
 
 try:
     from update_spec import parse_lock as _parse_spec_lock
@@ -41,9 +44,171 @@ except ImportError:
     _load_animation_config = None
     _validate_animation_config = None
 
+try:
+    from svg_to_pptx.drawingml.utils import (
+        parse_font_family as _parse_export_font_family,
+        parse_inline_style as _parse_inline_style,
+        parse_svg_color as _parse_export_color,
+    )
+except ImportError:
+    _parse_export_font_family = None
+    _parse_inline_style = None
+    _parse_export_color = None
 
-HEX_VALUE_RE = re.compile(r"#[0-9A-Fa-f]{3,8}")
+try:
+    from svg_to_pptx.drawingml.converter import (
+        collect_unsupported_visuals as _collect_unsupported_visuals,
+    )
+except ImportError:
+    _collect_unsupported_visuals = None
+
+try:
+    from svg_to_pptx.native_objects import (
+        validate_native_object_marker as _validate_native_object_marker,
+    )
+except ImportError:
+    _validate_native_object_marker = None
+
+try:
+    from svg_to_pptx.native_objects import (
+        validate_native_object_marker_with_warnings as _validate_native_object_marker_with_warnings,
+    )
+except ImportError:
+    _validate_native_object_marker_with_warnings = None
+
+try:
+    from svg_to_pptx.native_objects import (
+        native_object_marker_warnings as _native_object_marker_warnings,
+    )
+except ImportError:
+    _native_object_marker_warnings = None
+
+try:
+    from svg_to_pptx.semantic_markers import (
+        SEMANTIC_ATTRS as _SEMANTIC_ATTRS,
+        validate_semantic_markers as _validate_semantic_markers,
+    )
+except ImportError:
+    _SEMANTIC_ATTRS = frozenset({
+        'data-pptx-page-role',
+        'data-pptx-role',
+    })
+    _validate_semantic_markers = None
+
+try:
+    from svg_to_pptx.geometry_properties import (
+        materialize_inline_geometry_properties as _materialize_inline_geometry_properties,
+        validate_inline_geometry_properties as _validate_inline_geometry_properties,
+    )
+except ImportError:
+    _materialize_inline_geometry_properties = None
+    _validate_inline_geometry_properties = None
+
+try:
+    from svg_to_pptx.use_expander import (
+        UseExpansionError as _UseExpansionError,
+        expand_local_use_references as _expand_local_use_references,
+        validate_local_use_references as _validate_local_use_references,
+    )
+except ImportError:
+    _UseExpansionError = None
+    _expand_local_use_references = None
+    _validate_local_use_references = None
+
+try:
+    from svg_to_pptx.pptx_package.template_structure import (
+        TemplateStructureError as _TemplateStructureError,
+        PptxLayoutReference as _PptxLayoutReference,
+        PptxStructureLock as _PptxStructureLock,
+        load_native_structure_contract as _load_native_structure_contract,
+        load_pptx_structure_lock as _load_pptx_structure_lock,
+        native_structure_lock_errors as _native_structure_lock_errors,
+        parse_preserve_slides as _parse_preserve_structure_slides,
+        parse_template_slides as _parse_template_structure_slides,
+        template_lock_errors as _template_lock_errors,
+        validate_template_svg as _validate_template_structure_svg,
+    )
+except ImportError:
+    _TemplateStructureError = None
+    _PptxLayoutReference = None
+    _PptxStructureLock = None
+    _load_native_structure_contract = None
+    _load_pptx_structure_lock = None
+    _native_structure_lock_errors = None
+    _parse_preserve_structure_slides = None
+    _parse_template_structure_slides = None
+    _template_lock_errors = None
+    _validate_template_structure_svg = None
+
+try:
+    from svg_finalize.embed_icons import (
+        resolve_icon_path as _resolve_icon_path,
+    )
+except ImportError:
+    _resolve_icon_path = None
+
+try:
+    from resource_paths import (
+        SVG_WORK_DIR_NAMES as _SVG_WORK_DIR_NAMES,
+        icon_search_dirs_for_svg as _icon_search_dirs_for_svg,
+        project_root_for_svg_path as _project_root_for_svg_path,
+        resolve_external_image_reference as _resolve_external_image_reference,
+        unresolved_external_image_reference_path as _unresolved_external_image_reference_path,
+    )
+except ImportError:
+    _SVG_WORK_DIR_NAMES = frozenset()
+    _icon_search_dirs_for_svg = None
+    _project_root_for_svg_path = None
+    _resolve_external_image_reference = None
+    _unresolved_external_image_reference_path = None
+
+
+HEX_VALUE_RE = re.compile(
+    r"#(?:[0-9A-Fa-f]{3}|[0-9A-Fa-f]{4}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})"
+)
+_BARE_HEX_VALUE_RE = re.compile(
+    r"(?:[0-9A-Fa-f]{3}|[0-9A-Fa-f]{4}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})"
+)
 SVG_NS = "http://www.w3.org/2000/svg"
+XLINK_NS = "http://www.w3.org/1999/xlink"
+_SUPPORTED_FILTER_PRIMITIVES = frozenset({
+    'feDropShadow',
+    'feGaussianBlur',
+    'feOffset',
+    'feFlood',
+    'feComposite',
+    'feMerge',
+    'feMergeNode',
+    'feComponentTransfer',
+    'feFuncA',
+})
+_FILTER_EFFECT_PRIMITIVES = frozenset({'feDropShadow', 'feGaussianBlur'})
+
+
+def _normalize_hex_rgb(value: str) -> str | None:
+    """Normalize 3/4/6/8-digit HEX to alpha-free ``RRGGBB``."""
+    if not HEX_VALUE_RE.fullmatch(value):
+        return None
+    color = value[1:]
+    if len(color) in {3, 4}:
+        color = ''.join(channel * 2 for channel in color)
+    return color[:6].upper()
+
+
+# Fonts that survive direct PPTX typeface assignment on a typical Windows /
+# macOS viewer without requiring a custom install. Keep this aligned with
+# strategist.md §g and drawingml/utils.py FONT_FALLBACK_WIN.
+PPT_SAFE_FONTS = {
+    'microsoft yahei', 'simhei', 'simsun', 'kaiti', 'fangsong',
+    'dengxian', 'microsoft jhenghei',
+    'pingfang sc', 'heiti sc', 'songti sc', 'stsong',
+    'arial', 'arial black', 'calibri', 'segoe ui', 'verdana',
+    'helvetica', 'helvetica neue', 'tahoma', 'trebuchet ms',
+    'times new roman', 'times', 'georgia', 'cambria', 'palatino',
+    'garamond', 'book antiqua',
+    'consolas', 'courier new', 'menlo', 'monaco',
+    'impact',
+}
 
 # Ramp envelope for font-size drift detection.
 # From design_spec_reference.md §IV — Font Size Hierarchy: the ramp spans
@@ -54,6 +219,13 @@ SVG_NS = "http://www.w3.org/2000/svg"
 # values outside every band — i.e. outside this envelope — are drift.
 RAMP_MIN_RATIO = 0.5
 RAMP_MAX_RATIO = 5.0
+
+# Modes / visual styles that legitimately use unbounded hero / poster type
+# (huge cover numerals, act dividers, single-number reveals). For these the
+# size-drift upper bound is dropped — the oversize is the design, not Executor
+# drift. The lower bound still applies.
+POSTER_SIZE_MODES = {'showcase'}
+POSTER_SIZE_STYLES = {'zine'}
 
 
 def _design_spec_is_brand(spec_path: Path) -> bool:
@@ -80,6 +252,28 @@ def _design_spec_is_brand(spec_path: Path) -> bool:
             value = stripped.split(':', 1)[1].strip().strip('"\'')
             return value == 'brand'
     return False
+
+
+def _local_name(elem: ET.Element) -> str:
+    """Return an XML element's namespace-free local tag name."""
+    tag = elem.tag
+    if not isinstance(tag, str):
+        return ''
+    return tag.rsplit('}', 1)[-1] if '}' in tag else tag
+
+
+def _parse_viewbox_values(viewbox: str) -> Tuple[float, float, float, float] | None:
+    """Parse a root viewBox into four numeric values."""
+    parts = re.split(r'[\s,]+', viewbox.strip())
+    if len(parts) != 4:
+        return None
+    try:
+        values = tuple(float(part) for part in parts)
+    except ValueError:
+        return None
+    if values[2] <= 0 or values[3] <= 0:
+        return None
+    return values
 
 
 def _parse_placeholders_fallback(block: str) -> Dict[str, Tuple[str, ...]]:
@@ -210,6 +404,9 @@ class SVGQualityChecker:
         # severity is 'error' or 'warning'. Printed in print_summary.
         self._template_issues: List[Tuple[str, str, str]] = []
         self._animation_issues: List[Tuple[str, str]] = []
+        self._illustration_issues: List[Tuple[str, str, str]] = []
+        self._pptx_structure_issues: List[Tuple[str, str]] = []
+        self._aggregate_counts_applied = False
 
     def check_file(self, svg_file: str, expected_format: str = None) -> Dict:
         """
@@ -247,41 +444,63 @@ class SVGQualityChecker:
             with open(svg_path, 'r', encoding='utf-8') as f:
                 content = f.read()
 
-            # 0. Check XML well-formedness — every other check assumes the file
-            # is valid XML.  Bail early on failure so the regex-based checks
-            # below don't produce misleading errors on a broken document.
-            if self._check_xml_well_formed(content, result):
+            # 0. Parse XML once — every other check assumes the file is valid
+            # XML. Bail early on failure so the regex-based checks below don't
+            # produce misleading errors on a broken document.
+            root = self._parse_xml_root(content, result)
+            if root is not None:
                 # 1. Check viewBox
-                self._check_viewbox(content, result, expected_format)
+                self._check_viewbox(root, result, expected_format)
 
                 # 2. Check forbidden elements
-                self._check_forbidden_elements(content, result)
+                self._check_forbidden_elements(content, root, result)
 
-                # 3. Check fonts
+                # 2b. Validate the supported shadow/glow filter interface.
+                self._check_filter_effects(root, result)
+
+                # 2c. Reject gradient inheritance and transform semantics.
+                self._check_gradient_interfaces(root, result)
+
+                # 3. Check font-size values
+                self._check_font_size_values(content, result)
+
+                # 4. Check fonts
                 self._check_fonts(content, result)
 
-                # 4. Check width/height consistency with viewBox
-                self._check_dimensions(content, result)
-
                 # 5. Check text wrapping methods
-                self._check_text_elements(content, result)
+                self._check_text_elements(content, root, result)
 
                 # 6. Check image references (file existence and resolution)
-                self._check_image_references(content, svg_path, result)
+                self._check_image_references(root, svg_path, result)
 
-                # 7. Check object-level animation anchor quality.
-                self._check_animation_group_ids(content, result)
+                # 7. Check icon placeholders resolve before post-processing.
+                self._check_icon_placeholders(root, svg_path, result)
 
-                # 7b. Check <pattern> elements declare a PPTX preset.
-                self._check_pattern_fills(content, result)
+                # 7b. Reject visual elements the native converter cannot dispatch.
+                self._check_unsupported_visual_elements(root, result)
 
-                # 8. Check spec_lock drift (colors / font-family / font-size).
+                # 8. Check object-level animation anchor quality.
+                self._check_animation_group_ids(root, result)
+
+                # 8b. Check <pattern> elements declare a PPTX preset.
+                self._check_pattern_fills(root, result)
+
+                # 8c. Check opt-in native table/chart markers before export.
+                self._check_native_object_markers(root, result)
+
+                # 8d. Validate explicit master/layout/placeholder metadata.
+                self._check_pptx_structure_metadata(root, svg_path, result)
+
+                # 8e. Validate rendering-neutral page/structure compiler hints.
+                self._check_semantic_markers(root, svg_path, result)
+
+                # 9. Check spec_lock drift (colors / font-family / font-size).
                 #    Templates do not ship a spec_lock.md, so skip in template
                 #    mode to avoid noise.
                 if not self.template_mode:
                     self._check_spec_lock_drift(content, svg_path, result)
 
-                # 9. Check web-sourced image attribution. Templates don't carry
+                # 10. Check web-sourced image attribution. Templates don't carry
                 #    image_sources.json; skip in template mode.
                 if not self.template_mode:
                     self._check_sourced_image_attribution(content, svg_path, result)
@@ -310,8 +529,8 @@ class SVGQualityChecker:
         self.results.append(result)
         return result
 
-    def _check_xml_well_formed(self, content: str, result: Dict) -> bool:
-        """Check that the SVG content parses as well-formed XML.
+    def _parse_xml_root(self, content: str, result: Dict) -> ET.Element | None:
+        """Parse the SVG content as well-formed XML.
 
         SVG is strict XML.  AI-generated decks frequently produce content that
         looks fine in HTML5-tolerant previews but fails strict XML parsing —
@@ -320,11 +539,11 @@ class SVGQualityChecker:
         cannot be exported to PPTX, so we surface them here as a hard error
         before any downstream check looks at them.
 
-        Returns True when the document is well-formed; False otherwise.
+        Returns the parsed root when the document is well-formed; otherwise
+        appends an error and returns None.
         """
         try:
-            ET.fromstring(content)
-            return True
+            return ET.fromstring(content)
         except ET.ParseError as e:
             result['errors'].append(
                 f"Invalid XML: {e} — SVG must be well-formed XML. "
@@ -332,34 +551,53 @@ class SVGQualityChecker:
                 f"escape XML reserved chars as &amp; &lt; &gt; &quot; &apos; "
                 f"(see references/shared-standards.md §1)."
             )
-            return False
+            return None
 
-    def _check_viewbox(self, content: str, result: Dict, expected_format: str = None):
+    def _check_viewbox(self, root: ET.Element, result: Dict, expected_format: str = None):
         """Check viewBox attribute"""
-        viewbox_match = re.search(r'viewBox="([^"]+)"', content)
-
-        if not viewbox_match:
+        viewbox = root.get('viewBox')
+        if not viewbox:
             result['errors'].append("Missing viewBox attribute")
             return
 
-        viewbox = viewbox_match.group(1)
         result['info']['viewbox'] = viewbox
 
-        # Check format
-        if not re.match(r'0 0 \d+ \d+', viewbox):
+        parts = re.split(r'[\s,]+', viewbox.strip())
+        if len(parts) != 4:
+            result['errors'].append(
+                f"viewBox must contain exactly four numeric values; got: {viewbox}"
+            )
+            return
+        try:
+            values = tuple(float(part) for part in parts)
+        except ValueError:
+            result['errors'].append(
+                f"viewBox must contain exactly four numeric values; got: {viewbox}"
+            )
+            return
+        if values[2] <= 0 or values[3] <= 0:
+            result['errors'].append(
+                f"viewBox width/height must be positive; got: {viewbox}"
+            )
+            return
+
+        if values[0] != 0 or values[1] != 0 or any(not part.isdigit() for part in parts):
             result['warnings'].append(f"Unusual viewBox format: {viewbox}")
 
         # Check if it matches expected format
         if expected_format and expected_format in CANVAS_FORMATS:
             expected_viewbox = CANVAS_FORMATS[expected_format]['viewbox']
-            if viewbox != expected_viewbox:
+            expected_values = _parse_viewbox_values(expected_viewbox)
+            if expected_values and values != expected_values:
                 result['errors'].append(
                     f"viewBox mismatch: expected '{expected_viewbox}', got '{viewbox}'"
                 )
 
-    def _check_forbidden_elements(self, content: str, result: Dict):
+    def _check_forbidden_elements(self, content: str, root: ET.Element, result: Dict):
         """Check forbidden elements (blocklist)"""
         content_lower = content.lower()
+        elems = list(root.iter())
+        local_names = {_local_name(elem).lower() for elem in elems}
 
         # ============================================================
         # Forbidden elements blocklist - PPT incompatible
@@ -369,37 +607,36 @@ class SVGQualityChecker:
         # clipPath is allowed on <image> elements and on pptx_to_svg-generated
         # nested crop <svg data-pptx-crop="1"> wrappers. Both map back to
         # DrawingML picture geometry in the native converter.
-        if '<clippath' in content_lower:
-            # clip-path on non-image elements → error
-            clip_on_non_image = re.search(
-                r'<(?!image\b)(?!svg\b[^>]*\bdata-pptx-crop\s*=\s*["\']1["\'])\w+[^>]*\bclip-path\s*=',
-                content,
-                re.IGNORECASE,
-            )
-            if clip_on_non_image:
-                result['errors'].append(
-                    "clip-path is only allowed on <image> elements or "
-                    "pptx_to_svg crop wrappers — for shapes, draw the target "
-                    "shape directly instead of clipping")
-            # Check that every clip-path reference has a matching <clipPath> def
-            clip_refs = re.findall(r'clip-path\s*=\s*["\']url\(#([^)]+)\)', content)
-            for ref_id in clip_refs:
-                if f'id="{ref_id}"' not in content and f"id='{ref_id}'" not in content:
+        if 'clippath' in local_names:
+            ids = {elem.get('id') for elem in elems if elem.get('id')}
+            for elem in elems:
+                clip_ref = elem.get('clip-path')
+                if not clip_ref:
+                    continue
+                tag = _local_name(elem).lower()
+                is_crop_svg = tag == 'svg' and elem.get('data-pptx-crop') == '1'
+                if tag != 'image' and not is_crop_svg:
                     result['errors'].append(
-                        f"clip-path references #{ref_id} but no matching "
-                        f"<clipPath id=\"{ref_id}\"> definition found")
-        if '<mask' in content_lower:
+                        "clip-path is only allowed on <image> elements or "
+                        "pptx_to_svg crop wrappers — for shapes, draw the target "
+                        "shape directly instead of clipping")
+                match = re.search(r'url\(#([^)]+)\)', clip_ref)
+                if match and match.group(1) not in ids:
+                    result['errors'].append(
+                        f"clip-path references #{match.group(1)} but no matching "
+                        f"<clipPath id=\"{match.group(1)}\"> definition found")
+        if 'mask' in local_names:
             result['errors'].append("Detected forbidden <mask> element (PPT does not support SVG masks)")
 
         # Style system
-        if '<style' in content_lower:
+        if 'style' in local_names:
             result['errors'].append("Detected forbidden <style> element (use inline attributes instead)")
         if re.search(r'\bclass\s*=', content):
             result['errors'].append("Detected forbidden class attribute (use inline styles instead)")
         # id attribute: only report error when <style> also exists (id is harmful only with CSS selectors)
         # id inside <defs> for linearGradient/filter etc. is required, Inkscape also auto-adds id to elements,
         # standalone id attributes have no impact on PPT export
-        if '<style' in content_lower and re.search(r'\bid\s*=', content):
+        if 'style' in local_names and re.search(r'\bid\s*=', content):
             result['errors'].append(
                 "Detected id attribute used with <style> (CSS selectors forbidden, use inline styles instead)"
             )
@@ -409,119 +646,403 @@ class SVGQualityChecker:
             result['errors'].append("Detected forbidden <link rel=\"stylesheet\"> (external CSS references forbidden)")
         if re.search(r'@import\s+', content_lower):
             result['errors'].append("Detected forbidden @import (external CSS references forbidden)")
+        if _validate_inline_geometry_properties is None:
+            result['warnings'].append(
+                "Unable to import inline geometry validator; "
+                "native export will still validate geometry styles."
+            )
+        else:
+            geometry_errors = _validate_inline_geometry_properties(root)
+            for error in geometry_errors:
+                result['errors'].append(f"Invalid inline geometry property: {error}")
+            if not geometry_errors:
+                _materialize_inline_geometry_properties(root)
 
         # Structure / nesting
-        if '<foreignobject' in content_lower:
+        if 'foreignobject' in local_names:
             result['errors'].append(
                 "Detected forbidden <foreignObject> element (use <tspan> for manual line breaks)")
-        has_symbol = '<symbol' in content_lower
-        has_use = re.search(r'<use\b', content_lower) is not None
-        if has_symbol and has_use:
-            result['errors'].append("Detected forbidden <symbol> + <use> complex usage (use basic shapes or simple <use> instead)")
+        has_generic_use = any(
+            _local_name(elem).lower() == 'use' and elem.get('data-icon') is None
+            for elem in elems
+        )
+        if has_generic_use:
+            if _validate_local_use_references is None:
+                result['warnings'].append(
+                    "Detected local <use> references, but the shared validator "
+                    "could not be imported; native export will still validate them."
+                )
+            else:
+                for error in _validate_local_use_references(root):
+                    result['errors'].append(f"Invalid local <use> reference: {error}")
         # marker-start / marker-end are conditionally allowed (see shared-standards.md §1.1).
         # The converter maps qualifying <marker> defs to native DrawingML <a:headEnd>/<a:tailEnd>.
         # We only warn when a marker is used without an obvious <defs> definition in the same file.
         if re.search(r'\bmarker-(?:start|end)\s*=\s*["\']url\(#([^)]+)\)', content_lower):
-            if '<marker' not in content_lower:
+            if 'marker' not in local_names:
                 result['errors'].append(
                     "Detected marker-start/marker-end referencing a marker id, "
                     "but no <marker> element found in the file")
 
         # Text / fonts
-        if '<textpath' in content_lower:
+        if 'textpath' in local_names:
             result['errors'].append("Detected forbidden <textPath> element (path text is incompatible with PPT)")
         if '@font-face' in content_lower:
             result['errors'].append("Detected forbidden @font-face (use system font stack)")
 
         # Animation / interaction
-        if re.search(r'<animate', content_lower):
+        if any(name.startswith('animate') for name in local_names):
             result['errors'].append("Detected forbidden SMIL animation element <animate*> (SVG animations are not exported)")
-        if re.search(r'<set\b', content_lower):
+        if 'set' in local_names:
             result['errors'].append("Detected forbidden SMIL animation element <set> (SVG animations are not exported)")
-        if '<script' in content_lower:
+        if 'script' in local_names:
             result['errors'].append("Detected forbidden <script> element (scripts and event handlers forbidden)")
         if re.search(r'\bon\w+\s*=', content):  # onclick, onload etc.
             result['errors'].append("Detected forbidden event attributes (e.g., onclick, onload)")
 
         # Other discouraged elements
-        if '<iframe' in content_lower:
+        if 'iframe' in local_names:
             result['errors'].append("Detected <iframe> element (should not appear in SVG)")
-        if re.search(r'rgba\s*\(', content_lower):
-            result['errors'].append("Detected forbidden rgba() color (use fill-opacity/stroke-opacity instead)")
-        if re.search(r'<g[^>]*\sopacity\s*=', content_lower):
-            result['errors'].append("Detected forbidden <g opacity> (set opacity on each child element individually)")
-        if re.search(r'<image[^>]*\sopacity\s*=', content_lower):
-            result['errors'].append("Detected forbidden <image opacity> (use overlay mask approach)")
+
+        # Paint-server references must match the exact definitions consumed by
+        # drawingml.converter.collect_defs: direct children of <defs> only.
+        defs_by_id = {}
+        for defs_elem in elems:
+            if _local_name(defs_elem).lower() != 'defs':
+                continue
+            for child in defs_elem:
+                child_id = child.get('id')
+                if child_id:
+                    defs_by_id[child_id] = child
+        pattern_descendant_ids = {
+            id(descendant)
+            for pattern in elems
+            if _local_name(pattern).lower() == 'pattern'
+            for descendant in pattern.iter()
+            if descendant is not pattern
+        }
+        fill_shape_tags = {'rect', 'circle', 'ellipse', 'path', 'polygon', 'polyline'}
+        stroke_shape_tags = fill_shape_tags | {'line'}
+        paint_reference_errors = set()
+        for elem in elems:
+            style_values = (
+                _parse_inline_style(elem.get('style'))
+                if _parse_inline_style is not None else {}
+            )
+            for attr in ('fill', 'stroke'):
+                value = style_values.get(attr) or elem.get(attr)
+                match = re.fullmatch(r'url\(#([^)]+)\)', (value or '').strip())
+                if match is None:
+                    continue
+                ref_id = match.group(1)
+                target = defs_by_id.get(ref_id)
+                elem_tag = _local_name(elem)
+                elem_tag_lower = elem_tag.lower()
+                if target is None:
+                    paint_reference_errors.add(
+                        f"<{elem_tag}> {attr}=url(#{ref_id}) has no matching "
+                        "direct <defs> definition"
+                    )
+                    continue
+                has_text_descendant = any(
+                    _local_name(descendant).lower() in {'text', 'tspan'}
+                    for descendant in elem.iter()
+                    if descendant is not elem
+                )
+                if id(elem) in pattern_descendant_ids:
+                    allowed_tags = ()
+                elif attr == 'fill' and elem_tag_lower in fill_shape_tags:
+                    allowed_tags = ('lineargradient', 'radialgradient', 'pattern')
+                elif attr == 'stroke' and elem_tag_lower in stroke_shape_tags:
+                    allowed_tags = ('lineargradient', 'radialgradient')
+                elif attr == 'fill' and elem_tag_lower in {'text', 'tspan'}:
+                    allowed_tags = ('lineargradient', 'radialgradient')
+                elif attr == 'fill' and elem_tag_lower == 'g':
+                    allowed_tags = (
+                        ('lineargradient', 'radialgradient')
+                        if has_text_descendant
+                        else ('lineargradient', 'radialgradient', 'pattern')
+                    )
+                elif attr == 'stroke' and elem_tag_lower == 'g' and not has_text_descendant:
+                    allowed_tags = ('lineargradient', 'radialgradient')
+                else:
+                    allowed_tags = ()
+                target_tag = _local_name(target).lower()
+                if not allowed_tags:
+                    paint_reference_errors.add(
+                        f"<{elem_tag}> {attr}=url(#{ref_id}) is not supported "
+                        "by native PPTX conversion in this context"
+                    )
+                    continue
+                if target_tag not in allowed_tags:
+                    tag_labels = {
+                        'lineargradient': 'linearGradient',
+                        'radialgradient': 'radialGradient',
+                        'pattern': 'pattern',
+                    }
+                    expected = '/'.join(
+                        tag_labels[tag] for tag in allowed_tags
+                    )
+                    paint_reference_errors.add(
+                        f"<{elem_tag}> {attr}=url(#{ref_id}) resolves to "
+                        f"<{_local_name(target)}>; expected {expected}"
+                    )
+        result['errors'].extend(sorted(paint_reference_errors))
+
+        # Paint grammar: use the exporter's parser so authoring validation and
+        # native conversion accept the same CSS color subset.
+        paint_values = [
+            (attr, value)
+            for attr in (
+                'fill', 'stroke', 'stop-color', 'flood-color',
+                'data-pptx-fg', 'data-pptx-bg',
+            )
+            for value in self._svg_property_values(content, attr)
+        ]
+        if _parse_export_color is None:
+            result['warnings'].append(
+                "Unable to import svg_to_pptx color parser; skipped paint syntax check"
+            )
+        else:
+            invalid_paints = set()
+            for attr, value in paint_values:
+                normalized = value.strip()
+                if attr in {'fill', 'stroke'} and (
+                    normalized.lower() == 'none'
+                    or re.fullmatch(r'url\(#[^)]+\)', normalized)
+                ):
+                    continue
+                if _BARE_HEX_VALUE_RE.fullmatch(normalized):
+                    invalid_paints.add(value)
+                    continue
+                color, _alpha = _parse_export_color(normalized)
+                if color is None:
+                    invalid_paints.add(value)
+            if invalid_paints:
+                shown = ', '.join(sorted(invalid_paints)[:5])
+                more = len(invalid_paints) - 5
+                suffix = f" (+{more} more)" if more > 0 else ""
+                result['errors'].append(
+                    "Unsupported SVG paint value(s) for PPTX export: "
+                    f"{shown}{suffix}. Use a supported named color, rgb()/rgba(), "
+                    "hsl()/hsla(), or #RGB/#RGBA/#RRGGBB/#RRGGBBAA."
+                )
+        for elem in elems:
+            tag = _local_name(elem).lower()
+            if tag not in {'g', 'image'}:
+                continue
+            raw_opacity = elem.get('opacity')
+            if raw_opacity is None:
+                style_match = re.search(
+                    r'(?:^|;)\s*opacity\s*:\s*([^;]+)',
+                    elem.get('style', ''),
+                    flags=re.IGNORECASE,
+                )
+                raw_opacity = style_match.group(1).strip() if style_match else None
+            if raw_opacity is None:
+                continue
+            try:
+                opacity = float(raw_opacity)
+            except ValueError:
+                opacity = -1.0
+            if not 0.0 <= opacity <= 1.0:
+                result['errors'].append(
+                    f"<{tag} opacity> must be a numeric value from 0 to 1, got {raw_opacity!r}"
+                )
+            if tag == 'g' and opacity < 1.0 and any(
+                descendant.get('data-pptx-native')
+                for descendant in elem.iter()
+            ):
+                result['warnings'].append(
+                    "<g opacity> around data-pptx-native content uses the SVG "
+                    "fallback; --native-objects export rejects that combination"
+                )
+
+    def _check_filter_effects(self, root: ET.Element, result: Dict) -> None:
+        """Validate filters against the native shadow/glow approximation."""
+        elems = list(root.iter())
+        direct_filters = []
+        filters_by_id = {}
+        for defs_elem in elems:
+            if _local_name(defs_elem) != 'defs':
+                continue
+            for child in defs_elem:
+                if _local_name(child) != 'filter':
+                    continue
+                direct_filters.append(child)
+                filter_id = child.get('id')
+                if filter_id:
+                    filters_by_id[filter_id] = child
+
+        issues = set()
+        for elem in elems:
+            tag = _local_name(elem)
+            style_values = (
+                _parse_inline_style(elem.get('style'))
+                if _parse_inline_style is not None else {}
+            )
+            if style_values.get('filter'):
+                issues.add(
+                    f"<{tag}> filter must use a direct filter=\"url(#id)\" "
+                    "attribute; inline style filters are not supported"
+                )
+
+            raw_filter = elem.get('filter')
+            if raw_filter is None:
+                continue
+            match = re.fullmatch(r'url\(#([^)]+)\)', raw_filter.strip())
+            if match is None:
+                issues.add(
+                    f"<{tag}> filter must be an exact local url(#id) reference; "
+                    f"got {raw_filter!r}"
+                )
+                continue
+            filter_id = match.group(1)
+            if filter_id not in filters_by_id:
+                issues.add(
+                    f"<{tag}> filter=url(#{filter_id}) has no matching direct "
+                    f"<defs><filter id=\"{filter_id}\"> definition"
+                )
+
+        for filter_elem in direct_filters:
+            filter_id = filter_elem.get('id')
+            label = f"filter #{filter_id}" if filter_id else '<filter> without id'
+            primitives = [
+                _local_name(descendant)
+                for descendant in filter_elem.iter()
+                if descendant is not filter_elem
+            ]
+            unsupported = sorted(
+                set(primitives) - _SUPPORTED_FILTER_PRIMITIVES
+            )
+            if unsupported:
+                issues.add(
+                    f"{label} uses unsupported filter primitive(s): "
+                    f"{', '.join(unsupported)}"
+                )
+            if not _FILTER_EFFECT_PRIMITIVES.intersection(primitives):
+                issues.add(
+                    f"{label} must contain feDropShadow or feGaussianBlur"
+                )
+            if any(
+                _local_name(descendant) == 'feFuncA'
+                and descendant.get('type') != 'linear'
+                for descendant in filter_elem.iter()
+            ):
+                issues.add(f"{label} requires feFuncA type=\"linear\"")
+
+        result['errors'].extend(sorted(issues))
+
+    def _check_gradient_interfaces(self, root: ET.Element, result: Dict) -> None:
+        """Reject gradient inheritance, transforms, and spread modes."""
+        issues = set()
+        for gradient in root.iter():
+            tag = _local_name(gradient)
+            if tag not in {'linearGradient', 'radialGradient'}:
+                continue
+            gradient_id = gradient.get('id')
+            label = f"<{tag} id=\"{gradient_id}\">" if gradient_id else f'<{tag}>'
+            attribute_names = {
+                name.rsplit('}', 1)[-1]
+                for name in gradient.attrib
+            }
+            if 'href' in attribute_names:
+                issues.add(
+                    f"{label} cannot inherit from href/xlink:href; "
+                    "define gradient stops directly"
+                )
+            if 'gradientTransform' in attribute_names:
+                issues.add(f"{label} cannot use gradientTransform")
+            if 'spreadMethod' in attribute_names:
+                issues.add(f"{label} cannot use spreadMethod")
+
+        result['errors'].extend(sorted(issues))
+
+    def _check_font_size_values(self, content: str, result: Dict):
+        """Require font-size values to be unitless numeric SVG px values."""
+        numeric_re = re.compile(r'^(?:\d+(?:\.\d+)?|\.\d+)$')
+        bad_values = set()
+
+        for match in re.finditer(r'\bfont-size\s*=\s*(["\'])(.*?)\1', content, re.IGNORECASE):
+            raw = match.group(2).strip()
+            if not numeric_re.fullmatch(raw):
+                bad_values.add(raw)
+
+        for match in re.finditer(r'\bfont-size\s*:\s*([^;"\']+)', content, re.IGNORECASE):
+            raw = match.group(1).strip()
+            if not numeric_re.fullmatch(raw):
+                bad_values.add(raw)
+
+        if bad_values:
+            shown_values = sorted(bad_values)
+            shown = ', '.join(shown_values[:5])
+            more = len(shown_values) - 5
+            suffix = f" (+{more} more)" if more > 0 else ""
+            result['errors'].append(
+                f"font-size must be a unitless numeric px value; found {shown}{suffix}. "
+                "Write e.g. font-size=\"28\", never font-size=\"28px\" or \"21pt\"."
+            )
 
     def _check_fonts(self, content: str, result: Dict):
         """Check font usage.
 
-        PPTX stores a single `typeface` per run with no runtime fallback, so every
-        stack must END with a cross-platform pre-installed family. See
-        strategist.md §g "PPT-safe font discipline".
+        PPTX stores concrete typefaces per run with no CSS fallback. The
+        converter resolves each SVG font stack to exported latin / EA typefaces;
+        validate those exported values rather than the visual-preview tail.
         """
-        font_matches = re.findall(
-            r'font-family[:\s]*["\']([^"\']+)["\']', content, re.IGNORECASE)
+        font_matches = self._font_family_values(content)
 
         if not font_matches:
             return
 
-        result['info']['fonts'] = list(set(font_matches))
-
-        # Pre-installed on Windows + macOS out of the box (plus their direct
-        # FONT_FALLBACK_WIN mappings). A stack whose last concrete family is in
-        # this set survives the PPTX round-trip on any viewer machine.
-        ppt_safe_tail = {
-            'microsoft yahei', 'simhei', 'simsun', 'kaiti', 'fangsong',
-            'pingfang sc', 'heiti sc', 'songti sc', 'stsong',
-            'arial', 'arial black', 'calibri', 'segoe ui', 'verdana',
-            'helvetica', 'helvetica neue', 'tahoma', 'trebuchet ms',
-            'times new roman', 'times', 'georgia', 'cambria', 'palatino',
-            'consolas', 'courier new', 'menlo', 'monaco',
-            'impact',
-        }
+        result['info']['fonts'] = sorted(set(font_matches))
+        if _parse_export_font_family is None:
+            result['warnings'].append(
+                "Unable to import svg_to_pptx font resolver; skipped exported-font safety check"
+            )
+            return
 
         for font_family in font_matches:
-            # Drop the generic CSS fallback (sans-serif / serif / monospace)
-            # and inspect the last concrete family.
-            parts = [p.strip().strip('"').strip("'").lower()
-                     for p in font_family.split(',')]
-            parts = [p for p in parts
-                     if p and p not in ('sans-serif', 'serif', 'monospace',
-                                        'cursive', 'fantasy', 'system-ui')]
-            if not parts:
-                continue
-            tail = parts[-1]
-            if tail not in ppt_safe_tail:
+            exported = _parse_export_font_family(font_family)
+            unsafe = [
+                f"{role}={family}"
+                for role, family in exported.items()
+                if family.strip().lower() not in PPT_SAFE_FONTS
+            ]
+            if unsafe:
                 result['warnings'].append(
-                    f"Font stack does not end on a PPT-safe family "
-                    f"(expected e.g. Microsoft YaHei / SimSun / Arial / "
-                    f"Times New Roman / Consolas): {font_family}"
+                    "Font stack exports non-PPT-safe typeface(s) to PPTX "
+                    f"({', '.join(unsafe)}): {font_family}"
                 )
                 break
 
-    def _check_dimensions(self, content: str, result: Dict):
-        """Check width/height consistency with viewBox"""
-        width_match = re.search(r'width="(\d+)"', content)
-        height_match = re.search(r'height="(\d+)"', content)
+    @staticmethod
+    def _font_family_values(content: str) -> List[str]:
+        """Extract SVG font-family values from attributes and inline styles."""
+        return SVGQualityChecker._svg_property_values(content, 'font-family')
 
-        if width_match and height_match:
-            width = width_match.group(1)
-            height = height_match.group(1)
-            result['info']['dimensions'] = f"{width}x{height}"
+    @staticmethod
+    def _svg_property_values(content: str, property_name: str) -> List[str]:
+        """Extract a SVG property from direct attributes and inline styles."""
+        values: List[str] = []
+        attr_re = re.compile(
+            rf'\b{re.escape(property_name)}\s*=\s*(["\'])(.*?)\1',
+            re.IGNORECASE | re.DOTALL,
+        )
+        for match in attr_re.finditer(content):
+            values.append(html.unescape(match.group(2)).strip())
 
-            # Check consistency with viewBox
-            if 'viewbox' in result['info']:
-                viewbox_parts = result['info']['viewbox'].split()
-                if len(viewbox_parts) == 4:
-                    vb_width, vb_height = viewbox_parts[2], viewbox_parts[3]
-                    if width != vb_width or height != vb_height:
-                        result['warnings'].append(
-                            f"width/height ({width}x{height}) does not match viewBox "
-                            f"({vb_width}x{vb_height})"
-                        )
+        for match in re.finditer(r'\bstyle\s*=\s*(["\'])(.*?)\1', content, re.IGNORECASE | re.DOTALL):
+            style_value = html.unescape(match.group(2))
+            for part in style_value.split(';'):
+                if ':' not in part:
+                    continue
+                name, value = part.split(':', 1)
+                if name.strip().lower() == property_name.lower():
+                    values.append(value.strip())
+        return [value for value in values if value]
 
-    def _check_text_elements(self, content: str, result: Dict):
+    def _check_text_elements(self, content: str, root: ET.Element, result: Dict):
         """Check text elements and wrapping methods"""
         # Count text and tspan elements
         text_count = content.count('<text')
@@ -537,43 +1058,95 @@ class SVGQualityChecker:
                 f"Detected {len(text_matches)} potentially overly long single-line text(s) (consider using tspan for wrapping)"
             )
 
-    def _check_image_references(self, content: str, svg_path: Path, result: Dict):
-        """Check image file existence and resolution vs display size."""
-        # Find all <image ...> elements (capture the full tag)
-        img_tag_pattern = re.compile(r'<image\b([^>]*)/?>', re.IGNORECASE)
+        self._check_unmergeable_leading_text(root, result)
 
+    def _check_unmergeable_leading_text(self, root: ET.Element, result: Dict) -> None:
+        """Warn when leading text cannot be normalized for paragraph merging."""
+        risky = []
+        for text_el in root.iter(f'{{{SVG_NS}}}text'):
+            if not (text_el.text or "").strip():
+                continue
+            children = list(text_el)
+            if not any(self._is_line_tspan(child) for child in children):
+                continue
+
+            reason = self._leading_text_normalizer_reject_reason(text_el)
+            if reason is not None:
+                risky.append(reason)
+
+        if risky:
+            sample = '; '.join(risky[:3])
+            suffix = '' if len(risky) <= 3 else f"; +{len(risky) - 3} more"
+            result['warnings'].append(
+                "Detected multi-line <text> with leading direct text that cannot "
+                f"be normalized for PPT paragraph merging ({sample}{suffix})"
+            )
+
+    @staticmethod
+    def _is_tspan(elem: ET.Element) -> bool:
+        return elem.tag == f'{{{SVG_NS}}}tspan'
+
+    @classmethod
+    def _is_line_tspan(cls, elem: ET.Element) -> bool:
+        if not cls._is_tspan(elem):
+            return False
+        if elem.get('x') is not None or elem.get('y') is not None:
+            return True
+        dy = elem.get('dy')
+        if dy is None:
+            return False
+        try:
+            return float(re.match(r'^[\s,]*([+-]?(?:\d+\.?\d*|\d*\.\d+))', dy).group(1)) != 0
+        except (AttributeError, ValueError):
+            return True
+
+    @classmethod
+    def _leading_text_normalizer_reject_reason(cls, text_el: ET.Element) -> str | None:
+        if text_el.get('x') is None:
+            return '<text> has no x anchor'
+
+        for child in list(text_el):
+            if not cls._is_tspan(child):
+                return '<text> has non-tspan child'
+            if (child.tail or "").strip():
+                return '<tspan> has non-empty tail text'
+
+        return None
+
+    def _check_image_references(self, root: ET.Element, svg_path: Path, result: Dict):
+        """Check image file existence and resolution vs display size."""
         svg_dir = svg_path.parent
         checked = set()
 
-        for tag_match in img_tag_pattern.finditer(content):
-            attrs = tag_match.group(1)
-
-            # Extract href (prefer href over xlink:href)
-            href_match = (
-                re.search(r'\bhref="(?!data:)([^"]+)"', attrs) or
-                re.search(r'\bxlink:href="(?!data:)([^"]+)"', attrs)
-            )
-            if not href_match:
+        for image in root.iter():
+            if _local_name(image).lower() != 'image':
                 continue
 
-            href = href_match.group(1)
+            href = image.get('href') or image.get(f'{{{XLINK_NS}}}href')
+            if not href or href.startswith('data:'):
+                continue
+            if self.template_mode and '{{' in href and '}}' in href:
+                continue
+            if _resolve_external_image_reference is None or _unresolved_external_image_reference_path is None:
+                result['warnings'].append(
+                    "Detected image references, but shared image resolver could not be imported; "
+                    "export will still validate them."
+                )
+                return
             if href in checked:
                 continue
             checked.add(href)
 
-            # Resolve path relative to SVG file directory
-            img_path = (svg_dir / href).resolve()
-
-            if not img_path.exists():
+            img_path = _resolve_external_image_reference(svg_dir, href)
+            if img_path is None:
+                resolved_path = _unresolved_external_image_reference_path(svg_dir, href)
                 result['errors'].append(
-                    f"Image file not found: {href} (resolved to {img_path})")
+                    f"Image file not found: {href} (resolved to {resolved_path})")
                 continue
 
             # Check resolution vs display size
-            w_match = re.search(r'\bwidth="([^"]+)"', attrs)
-            h_match = re.search(r'\bheight="([^"]+)"', attrs)
-            display_w_str = w_match.group(1) if w_match else None
-            display_h_str = h_match.group(1) if h_match else None
+            display_w_str = image.get('width')
+            display_h_str = image.get('height')
             if not display_w_str or not display_h_str:
                 continue
 
@@ -602,13 +1175,90 @@ class SVGQualityChecker:
             except Exception:
                 pass  # Image unreadable, skip resolution check
 
-    def _check_animation_group_ids(self, content: str, result: Dict):
-        """Warn when visible top-level groups cannot be customized."""
-        try:
-            root = ET.fromstring(content)
-        except ET.ParseError:
+    def _check_icon_placeholders(self, root: ET.Element, svg_path: Path, result: Dict) -> None:
+        """Check that <use data-icon="..."> placeholders resolve."""
+        placeholders = [
+            elem for elem in root.iter()
+            if _local_name(elem).lower() == 'use' and elem.get('data-icon') is not None
+        ]
+        if not placeholders:
             return
 
+        if _resolve_icon_path is None:
+            result['warnings'].append(
+                "Detected data-icon placeholders, but icon resolver could not be imported; "
+                "post-processing/export will still validate them."
+            )
+            return
+        if _icon_search_dirs_for_svg is None:
+            result['warnings'].append(
+                "Detected data-icon placeholders, but shared icon search helper could not be imported; "
+                "post-processing/export will still validate them."
+            )
+            return
+
+        icons_dir, fallback_dir = _icon_search_dirs_for_svg(svg_path)
+        seen = set()
+        for elem in placeholders:
+            icon_name = (elem.get('data-icon') or '').strip()
+            if not icon_name:
+                result['errors'].append("Icon placeholder has empty data-icon value")
+                continue
+            if icon_name in seen:
+                continue
+            seen.add(icon_name)
+
+            icon_path, _ = _resolve_icon_path(icon_name, icons_dir, fallback_dir)
+            if not icon_path.exists():
+                fallback_msg = f", then {fallback_dir}" if fallback_dir else ""
+                result['errors'].append(
+                    f"Icon not found: {icon_name} (searched {icons_dir}"
+                    f"{fallback_msg})"
+                )
+
+    def _check_unsupported_visual_elements(
+        self,
+        root: ET.Element,
+        result: Dict,
+    ) -> None:
+        """Reject authored visual elements with no native converter dispatch."""
+        if _collect_unsupported_visuals is None:
+            result['errors'].append(
+                "Unable to import native visual-element preflight; "
+                "cannot verify SVG element support"
+            )
+            return
+        if _expand_local_use_references is None or _UseExpansionError is None:
+            result['errors'].append(
+                "Unable to import local <use> expansion; "
+                "cannot verify SVG element support"
+            )
+            return
+
+        expanded_root = copy.deepcopy(root)
+        try:
+            _expand_local_use_references(expanded_root)
+        except _UseExpansionError:
+            # _check_forbidden_elements already reports the actionable
+            # local-reference validation error.
+            return
+
+        unsupported = _collect_unsupported_visuals(
+            expanded_root,
+            allow_data_icon_use=True,
+        )
+        if not unsupported:
+            return
+
+        preview = '; '.join(unsupported[:8])
+        suffix = '' if len(unsupported) <= 8 else f'; +{len(unsupported) - 8} more'
+        result['errors'].append(
+            f"Unsupported visual SVG element(s) for native PPTX export: "
+            f"{preview}{suffix}"
+        )
+
+    def _check_animation_group_ids(self, root: ET.Element, result: Dict):
+        """Warn when visible top-level groups cannot be customized."""
         non_visual = {'defs', 'title', 'desc', 'metadata', 'style'}
         for index, child in enumerate(list(root), start=1):
             tag = child.tag.split('}', 1)[-1]
@@ -636,7 +1286,7 @@ class SVGQualityChecker:
         'divot', 'shingle',
     })
 
-    def _check_pattern_fills(self, content: str, result: Dict):
+    def _check_pattern_fills(self, root: ET.Element, result: Dict):
         """Audit <pattern> defs that drive PPTX <a:pattFill> output.
 
         svg_to_pptx maps <pattern fill> to native <a:pattFill prst="...">. The
@@ -644,9 +1294,8 @@ class SVGQualityChecker:
         `dkUpDiag`). Two failure modes worth catching pre-export:
 
         1. Missing annotation → converter silently falls back to `ltUpDiag`
-           (diagonal stripes) and picks `bg = #FFFFFF` when the pattern has
-           no child <rect>, turning a hand-authored grid into white-on-stripes
-           in PPTX.
+           (diagonal stripes). Color metadata or child paints still resolve,
+           with white as the final background fallback.
         2. Invalid preset name → PPTX schema rejects the file; PowerPoint
            opens it with "needs to be repaired". OOXML
            `ST_PresetPatternVal` is a closed enum — only the names in
@@ -654,11 +1303,6 @@ class SVGQualityChecker:
            value) is the canonical mistake; the only grids are `smGrid` /
            `lgGrid` / `dotGrid`.
         """
-        try:
-            root = ET.fromstring(content)
-        except ET.ParseError:
-            return
-
         for pattern in root.iter(f'{{{SVG_NS}}}pattern'):
             pat_id = pattern.get('id', '<unnamed>')
             prst = pattern.get('data-pptx-pattern')
@@ -666,9 +1310,9 @@ class SVGQualityChecker:
                 result['warnings'].append(
                     f"<pattern id=\"{pat_id}\"> has no data-pptx-pattern attribute — "
                     "PPTX export will fall back to `ltUpDiag` (diagonal stripes), "
-                    "not your custom geometry. Add data-pptx-pattern=\"lgGrid\" / "
-                    "\"smGrid\" / etc. plus a <rect fill=\"<bg>\"/> child so the "
-                    "preset and bg color match your design."
+                    "not your custom geometry. Add a valid data-pptx-pattern; "
+                    "set data-pptx-fg/data-pptx-bg or matching child paints "
+                    "when explicit pattern colors are required."
                 )
                 continue
             if prst not in self._OOXML_PATTERN_PRESETS:
@@ -678,9 +1322,144 @@ class SVGQualityChecker:
                     "will fail schema validation ('needs to be repaired'). "
                     "Use one of: smGrid / lgGrid / dotGrid (grids), "
                     "ltUpDiag / dkUpDiag / cross / diagCross / weave / plaid / "
-                    "horzBrick (others); full enum in svg_quality_checker.py "
-                    "_OOXML_PATTERN_PRESETS."
+                    "horzBrick (others); see references/shared-standards.md §7 "
+                    "for the full authoring enum."
                 )
+
+    def _check_native_object_markers(self, root: ET.Element, result: Dict) -> None:
+        """Validate opt-in native table/chart markers before PPTX export."""
+        for elem in root.iter():
+            status = elem.get('data-pptx-native-status')
+            if not status or elem.tag.rsplit('}', 1)[-1] == 'metadata':
+                continue
+            marker_id = elem.get('id') or elem.get('data-name') or '<unnamed>'
+            result['warnings'].append(
+                f"Native PPTX object {marker_id} is fallback-only: {status}"
+            )
+
+        markers = [
+            elem for elem in root.iter()
+            if elem.get('data-pptx-native') and elem.tag.rsplit('}', 1)[-1] != 'metadata'
+        ]
+        if not markers:
+            return
+        if _validate_native_object_marker is None:
+            result['warnings'].append(
+                "Detected data-pptx-native markers, but native-object validator "
+                "could not be imported; export-time validation will still run."
+            )
+            return
+
+        parent_map = {
+            child: parent
+            for parent in root.iter()
+            for child in parent
+        }
+
+        for marker in markers:
+            marker_id = marker.get('id') or '<unnamed>'
+            ancestors = []
+            parent = parent_map.get(marker)
+            while parent is not None and parent is not root:
+                if parent.tag.rsplit('}', 1)[-1] == 'g':
+                    ancestors.append(parent)
+                parent = parent_map.get(parent)
+            ancestors_tuple = tuple(reversed(ancestors))
+            if _validate_native_object_marker_with_warnings is not None:
+                try:
+                    warnings = _validate_native_object_marker_with_warnings(
+                        marker,
+                        ancestors=ancestors_tuple,
+                    )
+                except RuntimeError as exc:
+                    result['errors'].append(
+                        f"Invalid data-pptx-native marker {marker_id}: {exc}"
+                    )
+                    continue
+                for warning in warnings:
+                    result['warnings'].append(
+                        f"data-pptx-native marker {marker_id}: {warning}"
+                    )
+                continue
+
+            try:
+                _validate_native_object_marker(marker, ancestors=ancestors_tuple)
+            except RuntimeError as exc:
+                result['errors'].append(
+                    f"Invalid data-pptx-native marker {marker_id}: {exc}"
+                )
+                continue
+            if _native_object_marker_warnings is None:
+                continue
+            for warning in _native_object_marker_warnings(
+                marker,
+                ancestors=ancestors_tuple,
+            ):
+                result['warnings'].append(
+                    f"data-pptx-native marker {marker_id}: {warning}"
+                )
+
+    def _check_pptx_structure_metadata(
+        self,
+        root: ET.Element,
+        svg_path: Path,
+        result: Dict,
+    ) -> None:
+        """Validate explicit template-export metadata when any is present."""
+        structure_attrs = {
+            'data-pptx-layer',
+            'data-pptx-layout',
+            'data-pptx-layout-name',
+            'data-pptx-placeholder',
+            'data-pptx-placeholder-bounds',
+            'data-pptx-placeholder-idx',
+            'data-pptx-editable',
+        }
+        if not any(
+            elem.get(attr) is not None
+            for elem in root.iter()
+            for attr in structure_attrs
+        ):
+            return
+        if _validate_template_structure_svg is None:
+            result['warnings'].append(
+                "Detected PPTX template structure metadata, but its validator "
+                "could not be imported; template export will still validate it."
+            )
+            return
+        result['errors'].extend(_validate_template_structure_svg(svg_path))
+
+    def _check_semantic_markers(
+        self,
+        root: ET.Element,
+        svg_path: Path,
+        result: Dict,
+    ) -> None:
+        """Validate minimal compiler hints without changing SVG rendering."""
+        has_semantics = any(
+            elem.get(attr) is not None
+            for elem in root.iter()
+            for attr in _SEMANTIC_ATTRS
+        )
+        require_page_role = (
+            svg_path.parent.name in {'svg_output', 'svg_final'}
+            and root.get('data-pptx-layout') is None
+        )
+        if _validate_semantic_markers is None:
+            if has_semantics:
+                result['warnings'].append(
+                    "Detected Semantic SVG markers, but their validator could "
+                    "not be imported."
+                )
+            return
+        for issue in _validate_semantic_markers(
+            root,
+            require_page_role=require_page_role,
+        ):
+            if issue.severity == 'error':
+                result['errors'].append(issue.message)
+            else:
+                result['warnings'].append(issue.message)
 
     def _get_spec_lock(self, svg_path: Path):
         """Locate and parse spec_lock.md near the SVG. Returns dict or None.
@@ -709,7 +1488,8 @@ class SVGQualityChecker:
     def _check_spec_lock_drift(self, content: str, svg_path: Path, result: Dict):
         """Detect values used in the SVG that fall outside spec_lock.md.
 
-        Covers colors (fill / stroke / stop-color), font-family, and font-size.
+        Covers colors (fill / stroke / stop-color / flood-color / pattern
+        metadata), font-family, and font-size.
         Emits per-file warnings summarising the drift counts; exact drifting
         values are accumulated in self._drift_summary for the end-of-run
         aggregation. When spec_lock.md is missing, silently skip (consistent
@@ -722,10 +1502,32 @@ class SVGQualityChecker:
         # Build allow-sets from the lock
         allowed_colors = set()
         for v in lock.get('colors', {}).values():
-            if HEX_VALUE_RE.fullmatch(v):
-                allowed_colors.add(v.upper())
+            if _parse_export_color is not None:
+                color, _alpha = _parse_export_color(v)
+                if color:
+                    allowed_colors.add(color)
+            else:
+                color = _normalize_hex_rgb(v)
+                if color:
+                    allowed_colors.add(color)
 
         typo = lock.get('typography', {})
+        numeric_size_re = re.compile(r'^(?:\d+(?:\.\d+)?|\.\d+)$')
+        invalid_lock_sizes = []
+        for k, v in typo.items():
+            if k == 'font_family' or k.endswith('_family'):
+                continue
+            if not numeric_size_re.fullmatch(v.strip()):
+                invalid_lock_sizes.append(f"{k}: {v}")
+        if invalid_lock_sizes:
+            shown = ', '.join(invalid_lock_sizes[:5])
+            more = len(invalid_lock_sizes) - 5
+            suffix = f" (+{more} more)" if more > 0 else ""
+            result['errors'].append(
+                f"spec_lock typography sizes must be unitless numeric px values; "
+                f"found {shown}{suffix}."
+            )
+
         # Font families: default `font_family` plus any per-role `*_family`
         # override (title_family / body_family / emphasis_family / code_family,
         # per spec_lock_reference.md). Any of these is a legitimate declared
@@ -734,7 +1536,7 @@ class SVGQualityChecker:
         if typo:
             default_font = typo.get('font_family', '').strip()
             if default_font:
-                allowed_fonts.add(default_font)
+                allowed_fonts.add(self._normalize_font_stack(default_font))
             for k, v in typo.items():
                 if k == 'font_family' or not k.endswith('_family'):
                     continue
@@ -742,7 +1544,7 @@ class SVGQualityChecker:
                 # Skip placeholder text like "same as body (omit if identical)"
                 if not v_clean or v_clean.lower().startswith('same as'):
                     continue
-                allowed_fonts.add(v_clean)
+                allowed_fonts.add(self._normalize_font_stack(v_clean))
 
         # Sizes: declared slots are anchors; body is the ramp baseline.
         allowed_sizes = set()
@@ -759,34 +1561,61 @@ class SVGQualityChecker:
 
         # Scan SVG for used values
         color_drifts = set()
-        for attr in ('fill', 'stroke', 'stop-color'):
-            pattern = re.compile(rf'\b{attr}\s*=\s*["\'](#[0-9A-Fa-f]{{3,8}})["\']')
-            for m in pattern.finditer(content):
-                val = m.group(1).upper()
+        for attr in (
+            'fill', 'stroke', 'stop-color', 'flood-color',
+            'data-pptx-fg', 'data-pptx-bg',
+        ):
+            for raw_value in self._svg_property_values(content, attr):
+                normalized = raw_value.strip()
+                if normalized.lower() in {'none', 'transparent'} or re.fullmatch(
+                    r'url\(#[^)]+\)', normalized
+                ):
+                    continue
+                if _BARE_HEX_VALUE_RE.fullmatch(normalized):
+                    continue
+                if _parse_export_color is not None:
+                    val, _alpha = _parse_export_color(normalized)
+                    if val is None:
+                        continue
+                else:
+                    val = _normalize_hex_rgb(normalized)
+                    if val is None:
+                        continue
                 if val not in allowed_colors:
-                    color_drifts.add(val)
+                    color_drifts.add(f'#{val}')
 
         font_drifts = set()
-        for m in re.finditer(r'font-family\s*=\s*["\']([^"\']+)["\']', content):
-            val = m.group(1).strip()
-            if allowed_fonts and val not in allowed_fonts:
+        for val in self._font_family_values(content):
+            if allowed_fonts and self._normalize_font_stack(val) not in allowed_fonts:
                 font_drifts.add(val)
 
+        # Poster / showcase contexts use unbounded hero type — drop the ceiling.
+        mode = (lock.get('mode', {}).get('mode') or '').strip().lower()
+        vstyle = (lock.get('visual_style', {}).get('visual_style') or '').strip().lower()
+        max_ratio = (float('inf') if mode in POSTER_SIZE_MODES or vstyle in POSTER_SIZE_STYLES
+                     else RAMP_MAX_RATIO)
+
         size_drifts = set()
-        for m in re.finditer(r'font-size\s*=\s*["\']([^"\']+)["\']', content):
-            val = self._normalize_size(m.group(1))
+        used_sizes = []
+        for raw_value in self._svg_property_values(content, 'font-size'):
+            val = self._normalize_size(raw_value)
+            used_sizes.append(val)
             if not allowed_sizes or val in allowed_sizes:
                 continue
             # Intermediate values are allowed when they sit inside the ramp
-            # envelope (ratio to body within [RAMP_MIN_RATIO, RAMP_MAX_RATIO]).
+            # envelope (ratio to body within [RAMP_MIN_RATIO, max_ratio]).
             if body_px and body_px > 0:
                 try:
                     ratio = float(val) / body_px
-                    if RAMP_MIN_RATIO <= ratio <= RAMP_MAX_RATIO:
+                    if RAMP_MIN_RATIO <= ratio <= max_ratio:
                         continue
                 except ValueError:
                     pass
             size_drifts.add(val)
+
+        template_size_drift = self._detect_template_size_drift(
+            used_sizes, allowed_sizes, body_px
+        )
 
         # Record in run-wide aggregation
         fname = svg_path.name
@@ -810,6 +1639,72 @@ class SVGQualityChecker:
                 f"spec_lock drift: {', '.join(parts)} not in spec_lock.md "
                 "(see drift summary for details)"
             )
+        if template_size_drift:
+            result['warnings'].append(template_size_drift)
+
+    def _detect_template_size_drift(self, used_sizes, allowed_sizes, body_px):
+        """Warn when template-like small sizes bypass the locked type ramp.
+
+        The normal drift check deliberately permits in-ramp feature sizes, so
+        it should not hard-fail valid hero numbers or one-off labels. This
+        warning targets the common executor failure mode: copying a template's
+        compact 12/15/16px text stack instead of mapping content roles to
+        spec_lock typography, then reflowing from those locked px values.
+        """
+        if not allowed_sizes or not body_px or body_px <= 0:
+            return None
+
+        try:
+            declared_min = min(float(v) for v in allowed_sizes)
+        except ValueError:
+            declared_min = None
+
+        # Stay narrow on purpose: real decks carry legitimate undeclared
+        # sub-body sizes (intermediate levels, labels, emphasis) just below the
+        # locked body, so "any size < body" floods the warning and destroys its
+        # credibility. Only flag values that read as genuine template leftovers
+        # — at or below `body * 0.75`, or below the smallest declared slot. This
+        # under-warns (a stray 15/16 against a body of 18 can slip through) in
+        # exchange for not crying wolf on valid intermediate type.
+        template_like_limit = body_px * 0.75
+        template_like_sub_body = []
+        for raw in used_sizes:
+            if raw in allowed_sizes:
+                continue
+            try:
+                size = float(raw)
+            except (TypeError, ValueError):
+                continue
+            below_declared_floor = declared_min is not None and size < declared_min
+            if size <= template_like_limit or below_declared_floor:
+                template_like_sub_body.append(raw)
+
+        if not template_like_sub_body:
+            return None
+
+        counts = Counter(template_like_sub_body)
+        distinct = sorted(counts, key=lambda v: float(v))
+        repeated_total = sum(counts.values())
+
+        below_declared_floor = []
+        if declared_min is not None:
+            below_declared_floor = [v for v in distinct if float(v) < declared_min]
+
+        if len(distinct) < 2 and repeated_total < 4 and not below_declared_floor:
+            return None
+
+        sample = ', '.join(
+            f"{v}x{counts[v]}" if counts[v] > 1 else v
+            for v in distinct[:5]
+        )
+        more = len(distinct) - 5
+        suffix = f" (+{more} more)" if more > 0 else ""
+        return (
+            "possible template font-size drift: undeclared sub-body size(s) "
+            f"{sample}{suffix}. Map each text item to a spec_lock typography "
+            "role first, then reflow card height / y / dy / line-height from "
+            "the locked px values."
+        )
 
     def _find_image_sources_manifest(self, svg_path: Path) -> Path | None:
         """Locate image_sources.json for a project SVG.
@@ -877,13 +1772,25 @@ class SVGQualityChecker:
 
     @staticmethod
     def _normalize_size(value: str) -> str:
-        """Normalize a font-size value for comparison: lowercase, strip spaces,
-        strip trailing 'px'. Other units (em / rem / %) are kept as-is so that
-        e.g. '1.5em' vs '24' stay distinct."""
+        """Normalize a font-size value for drift comparison.
+
+        Unit-bearing SVG values are reported as errors before drift checking.
+        The legacy `px` strip remains to avoid a duplicate drift warning after
+        the hard error has already identified the unit problem.
+        """
         v = value.strip().lower()
         if v.endswith('px'):
             v = v[:-2].strip()
         return v
+
+    @staticmethod
+    def _normalize_font_stack(stack: str) -> str:
+        """Normalize a font-family stack for comparison: split on commas, strip
+        quotes / whitespace, lowercase, rejoin. Collapses cosmetic differences
+        (comma spacing, single vs double quotes, case) so that
+        `Consolas,'Courier New',monospace` matches `Consolas, "Courier New", monospace`."""
+        parts = [p.strip().strip('"\'').lower() for p in stack.split(',')]
+        return ','.join(p for p in parts if p)
 
     def _categorize_issue(self, error_msg: str) -> str:
         """Categorize issue type"""
@@ -955,18 +1862,510 @@ class SVGQualityChecker:
             result = self.check_file(str(svg_file), expected_format)
             self._print_result(result)
 
+        self._check_pptx_structure_contract(dir_path, svg_files)
         if self.template_mode and dir_path.is_dir():
             self._check_template_contract(dir_path, svg_files)
         elif dir_path.is_dir():
             self._check_animation_config_contract(dir_path)
+            self._check_illustration_resource_contract(dir_path)
 
         return self.results
+
+    def _check_pptx_structure_contract(
+        self,
+        target_path: Path,
+        svg_files: List[Path],
+    ) -> None:
+        """Validate project-level layout reuse and spec_lock mappings."""
+        if (
+            _load_pptx_structure_lock is None
+            or _parse_template_structure_slides is None
+            or _template_lock_errors is None
+            or _TemplateStructureError is None
+        ):
+            return
+        project_path = self._resolve_project_path(target_path)
+        try:
+            structure_lock = _load_pptx_structure_lock(project_path)
+        except _TemplateStructureError as exc:
+            self._pptx_structure_issues.append(('error', str(exc)))
+            return
+
+        if (
+            structure_lock is not None
+            and structure_lock.mode == 'template'
+            and structure_lock.template_adherence in {'strict', 'adaptive'}
+            and _parse_spec_lock is not None
+        ):
+            lock_path = project_path / 'spec_lock.md'
+            lock = _parse_spec_lock(lock_path)
+            page_layouts = lock.get('page_layouts', {})
+            expected_pages = {f'P{index:02d}' for index in range(1, len(svg_files) + 1)}
+            missing_pages = sorted(expected_pages - set(page_layouts))
+            if missing_pages:
+                self._pptx_structure_issues.append((
+                    'error',
+                    'spec_lock.md template export requires page_layouts '
+                    'rows for every generated page; missing: ' + ', '.join(missing_pages),
+                ))
+            template_dir = project_path / 'templates'
+            template_svgs = {path.stem for path in template_dir.glob('*.svg')}
+            missing_templates = sorted({
+                value.strip().removesuffix('.svg')
+                for page, value in page_layouts.items()
+                if page in expected_pages
+                and value.strip().removesuffix('.svg') not in template_svgs
+            })
+            if missing_templates:
+                self._pptx_structure_issues.append((
+                    'error',
+                    'spec_lock.md template export references missing '
+                    'template SVG(s): ' + ', '.join(missing_templates),
+                ))
+
+        structure_attrs = {
+            'data-pptx-layer',
+            'data-pptx-layout',
+            'data-pptx-layout-name',
+            'data-pptx-placeholder',
+            'data-pptx-placeholder-bounds',
+            'data-pptx-placeholder-idx',
+            'data-pptx-editable',
+        }
+        has_metadata = False
+        for svg_path in svg_files:
+            try:
+                root = ET.parse(svg_path).getroot()
+            except (OSError, ET.ParseError):
+                continue
+            if any(
+                elem.get(attr) is not None
+                for elem in root.iter()
+                for attr in structure_attrs
+            ):
+                has_metadata = True
+                break
+        locked_mode = structure_lock.mode if structure_lock is not None else None
+        structure_locked = locked_mode in {'template', 'preserve'}
+        if not has_metadata and not structure_locked:
+            return
+
+        try:
+            if locked_mode == 'preserve':
+                if _parse_preserve_structure_slides is None:
+                    return
+                specs = _parse_preserve_structure_slides(svg_files)
+            else:
+                specs = _parse_template_structure_slides(svg_files)
+        except _TemplateStructureError as exc:
+            self._pptx_structure_issues.append(('error', str(exc)))
+            return
+        if not structure_locked:
+            return
+        self._pptx_structure_issues.extend(
+            ('error', message)
+            for message in _template_lock_errors(specs, structure_lock)
+        )
+        if locked_mode != 'preserve':
+            return
+        if (
+            _load_native_structure_contract is None
+            or _native_structure_lock_errors is None
+        ):
+            self._pptx_structure_issues.append((
+                'error',
+                'Preserve mode validator could not load the native structure contract.',
+            ))
+            return
+        try:
+            contract = _load_native_structure_contract(structure_lock)
+        except _TemplateStructureError as exc:
+            self._pptx_structure_issues.append(('error', str(exc)))
+            return
+        self._pptx_structure_issues.extend(
+            ('error', message)
+            for message in _native_structure_lock_errors(
+                specs,
+                structure_lock,
+                contract,
+            )
+        )
+
+    def _check_illustration_resource_contract(self, dir_path: Path) -> None:
+        """Project-level illustration resource checks."""
+        project_path = self._resolve_project_path(dir_path)
+        spec_path = project_path / 'design_spec.md'
+        if not spec_path.exists():
+            return
+
+        try:
+            spec_text = spec_path.read_text(encoding='utf-8')
+        except OSError as exc:
+            self._illustration_issues.append((
+                'warning',
+                'spec_unreadable',
+                f"could not read {spec_path}: {exc}",
+            ))
+            return
+
+        rows = self._extract_image_resource_rows(spec_text)
+        if not rows:
+            return
+
+        lock_images = self._load_project_lock_images(project_path)
+        svg_texts = self._load_project_svg_texts(project_path)
+        all_svg_text = "\n".join(svg_texts.values())
+
+        sheet_rows = [row for row in rows if self._row_type(row).lower() == 'illustration sheet']
+        slice_rows = [row for row in rows if self._row_acquire(row) == 'slice']
+        image_rows = [
+            row for row in rows
+            if self._row_acquire(row) in {'ai', 'web', 'user', 'placeholder', 'slice'}
+            and self._row_type(row).lower() not in {'latex formula', 'illustration sheet'}
+        ]
+
+        for row in sheet_rows:
+            filename = self._row_filename(row)
+            if not filename:
+                continue
+            if filename in lock_images:
+                self._illustration_issues.append((
+                    'error',
+                    'sheet_in_lock',
+                    f"{filename} is an Illustration Sheet but is listed in spec_lock.md images; "
+                    "only sliced element rows may be listed.",
+                ))
+            if filename in all_svg_text:
+                self._illustration_issues.append((
+                    'error',
+                    'sheet_referenced',
+                    f"{filename} is an Illustration Sheet but is referenced by an SVG; "
+                    "generate it only as a slice source, never place it.",
+                ))
+
+        for row in slice_rows:
+            filename = self._row_filename(row)
+            if not filename:
+                continue
+            if filename not in lock_images:
+                self._illustration_issues.append((
+                    'error',
+                    'slice_missing_lock',
+                    f"{filename} is a slice row but is absent from spec_lock.md images.",
+                ))
+            if (
+                self._row_status(row) == 'generated'
+                and not (project_path / 'images' / filename).exists()
+            ):
+                self._illustration_issues.append((
+                    'error',
+                    'slice_file_missing',
+                    f"{filename} is a Generated slice row but images/{filename} does not exist.",
+                ))
+
+        has_coverage_note = 'Image-as-canvas' in spec_text or 'image-as-canvas' in spec_text
+        pattern_ids = self._collect_layout_pattern_ids(image_rows)
+        if len(image_rows) >= 4 and not any(38 <= pid <= 46 for pid in pattern_ids):
+            if not has_coverage_note:
+                self._illustration_issues.append((
+                    'warning',
+                    'missing_image_as_canvas',
+                    "deck has 4+ image-bearing rows but no #38-#46 image-as-canvas "
+                    "layout and no coverage note in design_spec.md §VIII.",
+                ))
+
+        conventional_ids = {1, 2, 3, 5, 6}
+        if len(image_rows) >= 4 and pattern_ids and pattern_ids.issubset(conventional_ids):
+            if not has_coverage_note:
+                self._illustration_issues.append((
+                    'warning',
+                    'layout_pattern_degenerated',
+                    "all image-bearing rows use only basic full-bleed / left-right / "
+                    "top-bottom patterns (#1/#2/#3/#5/#6); re-check "
+                    "references/image-layout-patterns.md for modifiers or image-as-canvas options.",
+                ))
+
+        for row in image_rows:
+            self._check_decorative_image_row(row, project_path, svg_texts)
+
+    @staticmethod
+    def _resolve_project_path(dir_path: Path) -> Path:
+        """Resolve a checker target directory to its project root."""
+        if _project_root_for_svg_path is not None and dir_path.name in _SVG_WORK_DIR_NAMES:
+            return _project_root_for_svg_path(dir_path)
+        if (dir_path / 'svg_output').exists() or (dir_path / 'design_spec.md').exists():
+            return dir_path
+        return dir_path.parent
+
+    @staticmethod
+    def _split_md_table_row(line: str) -> List[str]:
+        """Split a simple Markdown table row into stripped cells."""
+        return [cell.strip().strip('`') for cell in line.strip().strip('|').split('|')]
+
+    @classmethod
+    def _extract_image_resource_rows(cls, spec_text: str) -> List[Dict[str, str]]:
+        """Extract rows from design_spec.md §VIII Image Resource List."""
+        section_match = re.search(
+            r"^##\s+VIII\.\s+Image Resource List\b.*?(?=^##\s+|\Z)",
+            spec_text,
+            re.MULTILINE | re.DOTALL,
+        )
+        if not section_match:
+            return []
+
+        lines = section_match.group(0).splitlines()
+        header = None
+        rows: List[Dict[str, str]] = []
+        in_resource_table = False
+        for line in lines:
+            if not line.strip().startswith('|'):
+                if in_resource_table and rows:
+                    break
+                continue
+
+            cells = cls._split_md_table_row(line)
+            if not cells:
+                continue
+            if header is None:
+                if any(cell.lower() == 'filename' for cell in cells):
+                    header = cells
+                    in_resource_table = True
+                continue
+            if set(cell.replace('-', '').strip() for cell in cells) == {''}:
+                continue
+            if not in_resource_table:
+                continue
+            row = {header[i]: cells[i] if i < len(cells) else '' for i in range(len(header))}
+            filename = row.get('Filename', '').strip()
+            if filename and filename.lower() != 'filename':
+                rows.append(row)
+
+        return rows
+
+    @staticmethod
+    def _row_filename(row: Dict[str, str]) -> str:
+        return Path(row.get('Filename', '').strip()).name
+
+    @staticmethod
+    def _row_type(row: Dict[str, str]) -> str:
+        return row.get('Type', '').strip()
+
+    @staticmethod
+    def _row_acquire(row: Dict[str, str]) -> str:
+        return row.get('Acquire Via', '').strip().lower()
+
+    @staticmethod
+    def _row_status(row: Dict[str, str]) -> str:
+        return row.get('Status', '').strip().lower()
+
+    @staticmethod
+    def _row_layout(row: Dict[str, str]) -> str:
+        return row.get('Layout pattern', '').strip()
+
+    @staticmethod
+    def _collect_layout_pattern_ids(rows: List[Dict[str, str]]) -> set[int]:
+        ids: set[int] = set()
+        for row in rows:
+            for match in re.finditer(r'#(\d+)\b', SVGQualityChecker._row_layout(row)):
+                ids.add(int(match.group(1)))
+        return ids
+
+    def _load_project_lock_images(self, project_path: Path) -> set[str]:
+        """Return filenames listed under spec_lock.md images."""
+        lock_path = project_path / 'spec_lock.md'
+        if _parse_spec_lock is None or not lock_path.exists():
+            return set()
+        try:
+            lock = _parse_spec_lock(lock_path)
+        except Exception:
+            return set()
+        images = set()
+        for value in lock.get('images', {}).values():
+            path_part = value.split('|', 1)[0].strip()
+            images.add(Path(path_part).name)
+        return images
+
+    @staticmethod
+    def _load_project_svg_texts(project_path: Path) -> Dict[Path, str]:
+        """Read project SVG output files for project-level cross-checks."""
+        svg_dir = project_path / 'svg_output'
+        if not svg_dir.exists():
+            return {}
+        out: Dict[Path, str] = {}
+        for svg_path in sorted(svg_dir.glob('*.svg')):
+            try:
+                out[svg_path] = svg_path.read_text(encoding='utf-8')
+            except OSError:
+                continue
+        return out
+
+    def _check_decorative_image_row(
+        self,
+        row: Dict[str, str],
+        project_path: Path,
+        svg_texts: Dict[Path, str],
+    ) -> None:
+        """Warn when decorative image patterns lack obvious SVG/file evidence."""
+        filename = self._row_filename(row)
+        if not filename:
+            return
+        layout = self._row_layout(row)
+        ids = {int(match.group(1)) for match in re.finditer(r'#(\d+)\b', layout)}
+        decorative_ids = ids & {4, 58, 63, 66, 69}
+        if not decorative_ids:
+            return
+        if self._row_type(row).lower() == 'illustration sheet':
+            return
+
+        referenced_tags: List[Tuple[Path, str]] = []
+        for svg_path, content in svg_texts.items():
+            for tag in re.findall(r'<image\b[^>]*>', content, re.IGNORECASE):
+                if filename in tag:
+                    referenced_tags.append((svg_path, tag))
+
+        if 63 in decorative_ids:
+            if Path(filename).suffix.lower() != '.png':
+                self._illustration_issues.append((
+                    'warning',
+                    'sticker_not_png',
+                    f"{filename} uses #63 transparent sticker / cutout but is not a PNG.",
+                ))
+            elif not self._png_has_alpha(project_path / 'images' / filename):
+                self._illustration_issues.append((
+                    'warning',
+                    'sticker_no_alpha',
+                    f"{filename} uses #63 transparent sticker / cutout but the PNG "
+                    "does not appear to have an alpha channel.",
+                ))
+
+        if not referenced_tags:
+            return
+
+        if 69 in decorative_ids and not any('rotate(' in tag for _path, tag in referenced_tags):
+            self._illustration_issues.append((
+                'warning',
+                'rotation_missing',
+                f"{filename} declares #69 slight rotation but no referenced <image> "
+                "tag contains rotate(...).",
+            ))
+
+        if 4 in decorative_ids and not self._has_off_canvas_reference(referenced_tags):
+            self._illustration_issues.append((
+                'warning',
+                'edge_bleed_missing',
+                f"{filename} declares #4 edge bleed but no referenced <image> appears "
+                "to extend past the canvas edge.",
+            ))
+
+        if 58 in decorative_ids and not self._has_corner_fragment_reference(referenced_tags):
+            self._illustration_issues.append((
+                'warning',
+                'corner_fragment_missing',
+                f"{filename} declares #58 decorative corner fragment but no referenced "
+                "<image> appears near a canvas corner.",
+            ))
+
+        if 66 in decorative_ids:
+            content_scope = "\n".join(svg_texts.get(path, '') for path, _tag in referenced_tags)
+            if '<linearGradient' not in content_scope and 'opacity' not in content_scope:
+                self._illustration_issues.append((
+                    'warning',
+                    'fade_missing',
+                    f"{filename} declares #66 fade into background but the referencing "
+                    "SVG has no obvious gradient or opacity treatment.",
+                ))
+
+    @staticmethod
+    def _png_has_alpha(path: Path) -> bool:
+        """Return True when a PNG appears to carry transparent pixels."""
+        if not path.exists():
+            return False
+        try:
+            from PIL import Image as PILImage
+            with PILImage.open(path) as img:
+                if img.mode in {'RGBA', 'LA'}:
+                    alpha = img.getchannel('A')
+                    return alpha.getextrema()[0] < 255
+                return 'transparency' in img.info
+        except (ImportError, OSError, ValueError):
+            return False
+
+    @staticmethod
+    def _parse_image_geometry(tag: str) -> Tuple[float, float, float, float] | None:
+        """Extract x/y/width/height from an <image> tag."""
+        values = {}
+        for attr in ('x', 'y', 'width', 'height'):
+            match = re.search(rf'\b{attr}\s*=\s*["\']([^"\']+)["\']', tag)
+            if not match:
+                return None
+            try:
+                values[attr] = float(match.group(1))
+            except ValueError:
+                return None
+        return values['x'], values['y'], values['width'], values['height']
+
+    @staticmethod
+    def _parse_svg_viewbox(content: str) -> Tuple[float, float] | None:
+        """Return root viewBox width/height from SVG content."""
+        try:
+            root = ET.fromstring(content)
+        except ET.ParseError:
+            return None
+        viewbox = root.get('viewBox')
+        if not viewbox:
+            return None
+        values = _parse_viewbox_values(viewbox)
+        if values is None:
+            return None
+        return values[2], values[3]
+
+    @classmethod
+    def _has_off_canvas_reference(cls, refs: List[Tuple[Path, str]]) -> bool:
+        for svg_path, tag in refs:
+            geometry = cls._parse_image_geometry(tag)
+            if geometry is None:
+                continue
+            x, y, width, height = geometry
+            try:
+                content = svg_path.read_text(encoding='utf-8')
+            except OSError:
+                continue
+            viewbox = cls._parse_svg_viewbox(content)
+            if viewbox is None:
+                continue
+            vb_width, vb_height = viewbox
+            if x < 0 or y < 0 or x + width > vb_width or y + height > vb_height:
+                return True
+        return False
+
+    @classmethod
+    def _has_corner_fragment_reference(cls, refs: List[Tuple[Path, str]]) -> bool:
+        for svg_path, tag in refs:
+            geometry = cls._parse_image_geometry(tag)
+            if geometry is None:
+                continue
+            x, y, width, height = geometry
+            try:
+                content = svg_path.read_text(encoding='utf-8')
+            except OSError:
+                continue
+            viewbox = cls._parse_svg_viewbox(content)
+            if viewbox is None:
+                continue
+            vb_width, vb_height = viewbox
+            near_left = x <= 40
+            near_top = y <= 40
+            near_right = x + width >= vb_width - 40
+            near_bottom = y + height >= vb_height - 40
+            if (near_left or near_right) and (near_top or near_bottom):
+                return True
+        return False
 
     def _check_animation_config_contract(self, dir_path: Path) -> None:
         """Project-level animations.json reference checks."""
         if _load_animation_config is None or _validate_animation_config is None:
             return
-        project_path = dir_path if (dir_path / 'svg_output').exists() else dir_path.parent
+        project_path = self._resolve_project_path(dir_path)
         try:
             config = _load_animation_config(project_path)
         except Exception as exc:
@@ -979,11 +2378,12 @@ class SVGQualityChecker:
 
     def _check_template_contract(self, dir_path: Path,
                                  svg_files: List[Path]) -> None:
-        """Template-mode-only checks: roster ↔ design_spec consistency and
-        per-page placeholder hints.
+        """Check reusable-template structure, roster, and placeholder hints.
 
         - **Roster mismatch (orphan / missing)** is reported as an *error*: a
           stale roster will produce a wrong ``layouts_index.json`` entry.
+        - **Explicit structure gaps** are errors: every reusable SVG declares
+          its Layout and at least one direct structure/placeholder element.
         - **Placeholder gaps** are reported as *warnings*. Templates may
           legitimately omit conventional placeholders or swap them out (e.g.
           ``{{CLOSING_MESSAGE}}`` instead of ``{{THANK_YOU}}``), and a content
@@ -994,8 +2394,134 @@ class SVGQualityChecker:
         Issues are aggregated and printed in :py:meth:`print_summary` so the
         per-file report stays focused on intrinsic SVG validity.
         """
+        native_contract_path = dir_path / 'native_structure.json'
+        source_template_path = dir_path / 'source_template.pptx'
+        native_contract = None
+        for svg_file in svg_files:
+            try:
+                root = ET.parse(svg_file).getroot()
+            except (OSError, ET.ParseError):
+                continue
+            if not root.get('data-pptx-layout'):
+                self._template_issues.append((
+                    'error',
+                    'explicit_structure_missing',
+                    f"{svg_file.name}: reusable templates require root "
+                    "data-pptx-layout metadata",
+                ))
+            if not root.get('data-pptx-layout-name'):
+                self._template_issues.append((
+                    'error',
+                    'explicit_structure_name_missing',
+                    f"{svg_file.name}: reusable templates require root "
+                    "data-pptx-layout-name metadata",
+                ))
+            has_structure_child = any(
+                child.get('data-pptx-layer') in {'master', 'layout'}
+                or child.get('data-pptx-placeholder')
+                for child in list(root)
+            )
+            if not has_structure_child:
+                self._template_issues.append((
+                    'error',
+                    'explicit_structure_empty',
+                    f"{svg_file.name}: reusable templates require at least one "
+                    "direct master/layout/placeholder declaration",
+                ))
+        if native_contract_path.exists() != source_template_path.exists():
+            self._template_issues.append((
+                'error',
+                'native_structure_pair',
+                "native_structure.json and source_template.pptx must be shipped together",
+            ))
+        elif native_contract_path.exists():
+            if (
+                _PptxStructureLock is None
+                or _load_native_structure_contract is None
+                or _TemplateStructureError is None
+            ):
+                self._template_issues.append((
+                    'error',
+                    'native_structure_validator',
+                    "native structure validator is unavailable",
+                ))
+            else:
+                try:
+                    native_contract = _load_native_structure_contract(_PptxStructureLock(
+                        mode='preserve',
+                        source_template=source_template_path,
+                        native_structure=native_contract_path,
+                    ))
+                except _TemplateStructureError as exc:
+                    self._template_issues.append((
+                        'error',
+                        'native_structure_invalid',
+                        str(exc),
+                    ))
+        if (
+            native_contract is not None
+            and _PptxLayoutReference is not None
+            and _parse_preserve_structure_slides is not None
+            and _template_lock_errors is not None
+            and _native_structure_lock_errors is not None
+        ):
+            try:
+                native_specs = _parse_preserve_structure_slides(svg_files)
+                native_layouts = {
+                    layout.key: layout for layout in native_contract.layouts
+                }
+                references = tuple(
+                    _PptxLayoutReference(
+                        slide_num=spec.slide_num,
+                        layout_key=spec.layout_key,
+                        layout_name=(
+                            native_layouts[spec.layout_key].name
+                            if spec.layout_key in native_layouts
+                            else spec.layout_name
+                        ),
+                    )
+                    for spec in native_specs
+                )
+                native_lock = _PptxStructureLock(
+                    mode='preserve',
+                    layouts=references,
+                    source_template=source_template_path,
+                    native_structure=native_contract_path,
+                )
+                native_errors = _template_lock_errors(native_specs, native_lock)
+                native_errors.extend(_native_structure_lock_errors(
+                    native_specs,
+                    native_lock,
+                    native_contract,
+                ))
+                for message in native_errors:
+                    self._template_issues.append((
+                        'error',
+                        'native_structure_svg',
+                        message,
+                    ))
+            except _TemplateStructureError as exc:
+                self._template_issues.append((
+                    'error',
+                    'native_structure_svg',
+                    str(exc),
+                ))
+
         spec_path = dir_path / 'design_spec.md'
         spec_text = spec_path.read_text(encoding='utf-8') if spec_path.exists() else ""
+        mode_match = re.search(
+            r'^native_structure_mode:\s*([A-Za-z0-9_-]+)\s*$',
+            spec_text,
+            re.MULTILINE,
+        )
+        declared_structure_mode = mode_match.group(1).lower() if mode_match else None
+        if native_contract is None and declared_structure_mode != 'template':
+            self._template_issues.append((
+                'error',
+                'explicit_structure_mode',
+                "design_spec.md frontmatter must declare "
+                "native_structure_mode: template",
+            ))
         spec_pages = self._extract_spec_roster(spec_text) if spec_text else []
         custom_contract = self._extract_frontmatter_placeholders(spec_text) if spec_text else {}
 
@@ -1126,18 +2652,40 @@ class SVGQualityChecker:
         that as "skip orphan/missing checks", not as "no pages declared".
         """
         # Pass 1: explicit roster section, any roman numeral.
-        section = re.search(
-            r"^##\s+[IVX]+\.\s+(?:Page Roster|Page Structure|Pages|Page Types)\b.*?(?=^##\s+|\Z)",
+        sections = list(re.finditer(
+            r"^##\s+[IVX]+\.\s+(?:(?:SVG\s+)?Page Roster|Page Structure|Pages|Page Types)\b.*?(?=^##\s+|\Z)",
             spec_text,
             re.MULTILINE | re.DOTALL | re.IGNORECASE,
+        ))
+        roster_scope = next(
+            (
+                section.group(0)
+                for section in sections
+                if re.match(
+                    r"^##\s+[IVX]+\.\s+(?:SVG\s+)?Page Roster\b",
+                    section.group(0),
+                    re.IGNORECASE,
+                )
+            ),
+            None,
         )
-        scope = section.group(0) if section else None
+        scope = roster_scope or next(
+            (
+                section.group(0)
+                for section in sections
+                if re.search(r"[`\(][0-9A-Za-z_]+\.svg[`\)]", section.group(0))
+            ),
+            sections[0].group(0) if sections else None,
+        )
 
         # Pass 2: full document. We *only* trust this scan when the explicit
         # roster scan came up empty (no `<stem>.svg` references inside it) —
         # otherwise the explicit section's deliberate roster wins over loose
         # mentions elsewhere.
-        if scope and re.search(r"[`\(][0-9A-Za-z_]+\.svg[`\)]", scope):
+        explicit_scope = bool(
+            scope and re.search(r"[`\(][0-9A-Za-z_]+\.svg[`\)]", scope)
+        )
+        if explicit_scope:
             text = scope
         else:
             text = spec_text
@@ -1149,7 +2697,7 @@ class SVGQualityChecker:
         svg_ref_re = re.compile(r"[`\(]([0-9A-Za-z_]+\.svg)[`\)]")
         for match in svg_ref_re.finditer(text):
             stem = match.group(1)[:-4]
-            if stem in seen or not re.match(r"^\d", stem):
+            if stem in seen or (not explicit_scope and not re.match(r"^\d", stem)):
                 continue
             seen.add(stem)
             stems.append(stem)
@@ -1239,6 +2787,8 @@ class SVGQualityChecker:
 
     def print_summary(self):
         """Print check summary"""
+        self._apply_aggregated_issue_counts()
+
         print("=" * 80)
         print("[SUMMARY] Check Summary")
         print("=" * 80)
@@ -1265,13 +2815,19 @@ class SVGQualityChecker:
         # Animation config aggregation.
         self._print_animation_summary()
 
+        # Illustration strategy aggregation.
+        self._print_illustration_summary()
+
+        # Explicit PowerPoint master/layout structure aggregation.
+        self._print_pptx_structure_summary()
+
         # Fix suggestions
         if self.summary['errors'] > 0 or self.summary['warnings'] > 0:
             print(f"\n[TIP] Common fixes:")
             print(f"  1. XML well-formedness: write typography as raw Unicode (—, ©, →, NBSP); escape XML reserved chars as &amp; &lt; &gt; &quot; &apos; — never use HTML named entities like &nbsp; &mdash; &copy;")
-            print(f"  2. viewBox issues: Ensure consistency with canvas format (see references/canvas-formats.md)")
+            print(f"  2. viewBox issues: root viewBox is the canvas authority (see references/canvas-formats.md)")
             print(f"  3. foreignObject: Use <text> + <tspan> for manual line breaks")
-            print(f"  4. Font issues: end every font-family stack with a PPT-safe family (e.g. Microsoft YaHei / Arial / Consolas)")
+            print(f"  4. Font issues: use PPT-safe exported typefaces (e.g. Microsoft YaHei / Arial / Consolas)")
 
     def _print_animation_summary(self):
         """Print animations.json validation issues if present."""
@@ -1280,16 +2836,38 @@ class SVGQualityChecker:
 
         errors = [item for item in self._animation_issues if item[0] == 'error']
         warnings = [item for item in self._animation_issues if item[0] == 'warning']
-        self.summary['errors'] += len(errors)
-        self.summary['warnings'] += len(warnings)
-        for severity, _msg in self._animation_issues:
-            self.issue_types[f'animation_config_{severity}'] += 1
 
         print("\n[ANIMATION] animations.json checks")
         for _severity, msg in errors:
             print(f"  [ERROR] {msg}")
         for _severity, msg in warnings:
             print(f"  [WARN] {msg}")
+
+    def _print_illustration_summary(self):
+        """Print project-level illustration strategy issues if present."""
+        if not self._illustration_issues:
+            return
+
+        errors = [item for item in self._illustration_issues if item[0] == 'error']
+        warnings = [item for item in self._illustration_issues if item[0] == 'warning']
+
+        print("\n[ILLUSTRATION] Illustration strategy checks")
+        if errors:
+            print(f"  Errors ({len(errors)}):")
+            for _severity, kind, msg in errors:
+                print(f"    [{kind}] {msg}")
+        if warnings:
+            print(f"  Warnings ({len(warnings)}):")
+            for _severity, kind, msg in warnings:
+                print(f"    [{kind}] {msg}")
+
+    def _print_pptx_structure_summary(self):
+        """Print project-level PowerPoint structure contract issues."""
+        if not self._pptx_structure_issues:
+            return
+        print("\n[PPTX STRUCTURE] Master/layout contract checks")
+        for severity, message in self._pptx_structure_issues:
+            print(f"  [{severity.upper()}] {message}")
 
     def _print_template_summary(self):
         """Aggregate template-mode roster / placeholder issues at the bottom.
@@ -1304,13 +2882,6 @@ class SVGQualityChecker:
         errors = [item for item in self._template_issues if item[0] == 'error']
         warnings = [item for item in self._template_issues if item[0] == 'warning']
 
-        # Mirror into the global summary so downstream "0 errors" gates honor
-        # template-mode issues.
-        self.summary['errors'] += len(errors)
-        self.summary['warnings'] += len(warnings)
-        for severity, kind, _msg in self._template_issues:
-            self.issue_types[f"template_{kind}"] += 1
-
         print("\n[TEMPLATE] Template mode checks")
         if errors:
             print(f"  Errors ({len(errors)}):")
@@ -1323,6 +2894,40 @@ class SVGQualityChecker:
         if not errors:
             print("  No structural roster issues. Placeholder hints above are advisory only;")
             print("  declare 'placeholders:' frontmatter in design_spec.md to silence them.")
+
+    def _apply_aggregated_issue_counts(self):
+        """Mirror project-level aggregate issues into summary counters once."""
+        if self._aggregate_counts_applied:
+            return
+        self._aggregate_counts_applied = True
+
+        animation_errors = [item for item in self._animation_issues if item[0] == 'error']
+        animation_warnings = [item for item in self._animation_issues if item[0] == 'warning']
+        self.summary['errors'] += len(animation_errors)
+        self.summary['warnings'] += len(animation_warnings)
+        for severity, _msg in self._animation_issues:
+            self.issue_types[f'animation_config_{severity}'] += 1
+
+        template_errors = [item for item in self._template_issues if item[0] == 'error']
+        template_warnings = [item for item in self._template_issues if item[0] == 'warning']
+        self.summary['errors'] += len(template_errors)
+        self.summary['warnings'] += len(template_warnings)
+        for severity, kind, _msg in self._template_issues:
+            self.issue_types[f'template_{kind}_{severity}'] += 1
+
+        illustration_errors = [item for item in self._illustration_issues if item[0] == 'error']
+        illustration_warnings = [item for item in self._illustration_issues if item[0] == 'warning']
+        self.summary['errors'] += len(illustration_errors)
+        self.summary['warnings'] += len(illustration_warnings)
+        for severity, kind, _msg in self._illustration_issues:
+            self.issue_types[f'illustration_{kind}_{severity}'] += 1
+
+        structure_errors = [item for item in self._pptx_structure_issues if item[0] == 'error']
+        structure_warnings = [item for item in self._pptx_structure_issues if item[0] == 'warning']
+        self.summary['errors'] += len(structure_errors)
+        self.summary['warnings'] += len(structure_warnings)
+        for severity, _msg in self._pptx_structure_issues:
+            self.issue_types[f'pptx_structure_{severity}'] += 1
 
     def _print_drift_summary(self):
         """Print spec_lock drift aggregation if any was observed.
@@ -1363,7 +2968,7 @@ class SVGQualityChecker:
         """Calculate percentage"""
         if self.summary['total'] == 0:
             return 0
-        return int(count / self.summary['total'] * 100)
+        return min(100, int(count / self.summary['total'] * 100))
 
     def export_report(self, output_file: str = 'svg_quality_report.txt'):
         """Export check report"""

@@ -42,13 +42,13 @@ primary_color: "#XXXXXX"
 ## VIII. SVG Page Roster         # Structure — file list + per-file purpose
 ```
 
-Decks may include additional supporting sections (Voice & Tone, Icon Style, Layout Modes, Spacing Specification, SVG Technical Constraints, Placeholder Specification, Asset Specification, Usage Notes). Use them when meaningful for the replica.
+Decks may include additional supporting sections (Voice & Tone, Icon Style, Layout Modes, Spacing Specification, Placeholder Specification, Asset Specification, Usage Notes). Put a template-specific required / forbidden / conditional boundary inside the personality section it qualifies. General SVG/PPT authoring rules belong only in [`shared-standards.md`](../../references/shared-standards.md); do not add a generic technical-rules section or pointer to a deck spec.
 
 ---
 
 ## Fusion behavior at Step 3
 
-When the user gives a deck path **alone**, Strategist locks all segments; Eight Confirmations narrows to deck-content fields (target audience / page count / outline / tone tweaks).
+When the user gives a deck path **alone**, Strategist locks all segments; Strategist confirmation stage narrows to deck-content fields (target audience / page count / outline / tone tweaks).
 
 When the user gives a deck path **with** a brand path or layout path, identity / structure segments are overridden by the higher-priority source (brand wins on identity, layout wins on structure). See [`SKILL.md`](../../SKILL.md) Step 3 fusion table.
 

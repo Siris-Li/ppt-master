@@ -14,6 +14,8 @@
 | **Layout** | `templates/layouts/<id>/` | Structure segment only: canvas / page structure / page types / SVG roster | No brand identity (no logo, no locked brand color) | `workflows/create-template.md` (layout branch) |
 | **Deck** | `templates/decks/<id>/` | All segments: identity + structure + middle (template overview) | — | `workflows/create-template.md` (deck branch, default) |
 
+Every Layout/Deck SVG is a complete preview with explicit `data-pptx-layout`, Master/Layout layers, and semantic placeholders. These specialized markers are authoritative; minimal `data-pptx-role` hints are added only for structural page-frame behavior they cannot express, and ordinary content is not duplicated into a metadata taxonomy. PPTX-import artifacts are analysis inputs only and are not packaged into new templates. The template guides authoring of a complete generated page SVG; export never reaches back into the template to overlay visible content missing from that generated SVG. Strict use keeps the selected Layout contract; adaptive use may create a new Layout under the same Master. Both export through `pptx_structure.mode: template`; legacy `preserve` remains compatibility-only.
+
 The three are **parallel reference bundles**. The physical directory and the frontmatter `kind` field correspond one-to-one:
 
 ```yaml
@@ -26,12 +28,14 @@ kind: brand
 # templates/layouts/academic_defense/design_spec.md
 ---
 kind: layout
+native_structure_mode: template
 ...
 ---
 
 # templates/decks/招商银行/design_spec.md
 ---
 kind: deck
+native_structure_mode: template
 ...
 ---
 ```
@@ -92,6 +96,7 @@ primary_color: "<HEX>"
 ---
 layout_id: <slug>
 kind: layout
+native_structure_mode: template
 summary: <one-line use cases>
 canvas_format: <ppt169 | ppt43 | a4 | ...>
 page_count: <N>
@@ -109,7 +114,7 @@ page_types: [<cover, toc, chapter, content, ending, ...>]
 | IV | Page Types | Per-page role (cover / toc / chapter / content / ending …) + variant descriptions |
 | V | SVG Page Roster | File list + purpose, each file mapped to a III/IV role |
 
-**Forbidden**: brand logo, brand voice & tone, official-truth color (`provenance: fact`) — those belong to brand. Layouts have no fallback color or typography by definition: identity segments are not written here; color and typography are decided live in Strategist's Eight Confirmations.
+**Forbidden**: brand logo, brand voice & tone, official-truth color (`provenance: fact`) — those belong to brand. Layouts have no fallback color or typography by definition: identity segments are not written here; color and typography are decided live in Strategist's confirmation stage.
 
 ### Deck schema
 
@@ -119,6 +124,7 @@ page_types: [<cover, toc, chapter, content, ending, ...>]
 ---
 deck_id: <slug>
 kind: deck
+native_structure_mode: template
 summary: <one-line use cases>
 canvas_format: <ppt169 | ...>
 page_count: <N>
@@ -207,7 +213,7 @@ When the user supplies a set of paths in their initial message, Step 3 fuses the
 |---|---|
 | (none) | Skip Step 3, free design |
 | brand only | Copy brand wholesale; structure stays free design |
-| layout only | Copy layout wholesale; identity stays free design (Strategist e/f/g confirmations decide) |
+| layout only | Copy layout wholesale; identity stays free design (Strategist fields e/f/g decide) |
 | deck only | Copy deck wholesale |
 | brand + layout | brand provides identity, layout provides structure (follows existing SKILL.md fusion table) |
 | brand + deck | brand overrides deck's identity segment at segment level; structure + middle come from deck |
@@ -218,7 +224,7 @@ When the user supplies a set of paths in their initial message, Step 3 fuses the
 
 Fusion defaults to **whole-segment integer replacement** — e.g. on deck + brand, the entire Color Scheme / Typography / Logo / Voice / Icon Style five sections come from brand. **No implicit field-level mixing** (you will never get "primary from brand, secondary from deck").
 
-Field-level micro-adjustment goes through the existing Strategist Eight Confirmations path — the user says in chat "use the anthropic brand but change primary to #FF0000", and Strategist adjusts in confirmations e/g. Step 3 fusion does not add field-level syntax.
+Field-level micro-adjustment goes through the existing Strategist confirmation stage path — the user says in chat "use the anthropic brand but change primary to #FF0000", and Strategist adjusts fields e/g. Step 3 fusion does not add field-level syntax.
 
 ### Same-kind multiple paths = git-style conflict resolution
 
@@ -270,9 +276,9 @@ This lets both AI and humans trace which segment came from where.
 | Multi-path | Fuse into one `design_spec.md` per the table above; merge SVG / logo files from each source |
 | Same-kind multiple | Run the "git-style conflict resolution" prompt above to determine the merge |
 
-### Strategist Eight Confirmations narrowing per kind
+### Strategist confirmation stage narrowing per kind
 
-When a deck path is supplied, the user already has a complete solution; the Eight Confirmations narrow to "target audience / page count / outline / tone tweaks" — deck-content fields. Other fields reuse the locked values directly. The narrowing rules live in `references/strategist.md` and `spec_lock_reference.md`.
+When a deck path is supplied, the user already has a complete solution; the Strategist confirmation stage narrows to "target audience / page count / outline / tone tweaks" — deck-content fields. Other fields reuse the locked values directly. The narrowing rules live in `references/strategist.md` and `spec_lock_reference.md`.
 
 ---
 
@@ -289,6 +295,6 @@ After production, the frontmatter `kind` field determines whether the file lands
 
 ## 7. Non-goals (rejection list paired with this framing)
 
-- **No field-level override syntax in the fusion layer** — field-level adjustment uses the existing Strategist Eight Confirmations path
+- **No field-level override syntax in the fusion layer** — field-level adjustment uses the existing Strategist confirmation stage path
 - **No batch conflict resolution for three or more of the same kind** — ask the user to narrow it down in chat first
 - **No bilingual name mapping table** — templates are named in their brand / scenario's native language (Chinese templates use Chinese names; English templates use snake_case); no forced unification

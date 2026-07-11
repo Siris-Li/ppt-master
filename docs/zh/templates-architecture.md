@@ -14,7 +14,11 @@
 | **Layout** | `templates/layouts/<id>/` | 仅结构段：canvas / page structure / page types / SVG roster | 不写品牌身份（无 logo、无品牌色硬约束） | `workflows/create-template.md`（layout 分支）|
 | **Deck** | `templates/decks/<id>/` | 全段：身份段 + 结构段 + 中间段（template overview） | —— | `workflows/create-template.md`（deck 分支，默认）|
 
+Layout/Deck 的每张 SVG 都是完整预览，同时显式声明 `data-pptx-layout`、Master/Layout 层和语义 placeholder。这些专用标记具有最高优先级；最小 `data-pptx-role` 只补充它们无法表达的页面框架行为，普通内容不会被重复分类到 metadata 词表。PPTX 导入产生的 `native_structure.json` 与 `source_template.pptx` 只用于分析源结构，不进入新模板包。模板负责指导生成完整的页面 SVG；导出时不得再回读模板，向生成 SVG 叠加其中缺失的可见内容。下游 `strict` 保持所选 Layout 契约，`adaptive` 可在同一 Master 下创建新 Layout；两者都使用 `pptx_structure.mode: template`。旧 `preserve` 契约仅保留兼容读取。
+
 三者是**三种并列的 reference bundle**，物理目录与 frontmatter `kind` 字段双向对齐：
+
+多路径合成后的项目级 `design_spec.md` 也必须保留准确的 `kind`：同时具备身份段和结构段时为 `deck`，只有结构段时为 `layout`，只有身份段时为 `brand`。Strategist 确认页据此只对真正包含页面结构的 Deck/Layout 显示 `adaptive / strict`。
 
 ```yaml
 # templates/brands/anthropic/design_spec.md
@@ -26,12 +30,14 @@ kind: brand
 # templates/layouts/academic_defense/design_spec.md
 ---
 kind: layout
+native_structure_mode: template
 ...
 ---
 
 # templates/decks/招商银行/design_spec.md
 ---
 kind: deck
+native_structure_mode: template
 ...
 ---
 ```
@@ -92,6 +98,7 @@ primary_color: "<HEX>"
 ---
 layout_id: <slug>
 kind: layout
+native_structure_mode: template
 summary: <一句话描述用途>
 canvas_format: <ppt169 | ppt43 | a4 | ...>
 page_count: <N>
@@ -109,7 +116,7 @@ page_types: [<cover, toc, chapter, content, ending, ...>]
 | IV | Page Types | 每种页面的角色（cover / toc / chapter / content / ending …）与变体说明 |
 | V | SVG Page Roster | 文件清单 + 用途，每个文件对应 III/IV 哪一类 |
 
-**不允许出现**：品牌 logo、品牌 voice & tone、官方真值色（`provenance: fact`）——这些是 brand 的职责。Layout 自身没有兜底色/字体（这是定义：layout 不写身份段；色彩与字体在 Strategist 八项确认现场决策）。
+**不允许出现**：品牌 logo、品牌 voice & tone、官方真值色（`provenance: fact`）——这些是 brand 的职责。Layout 自身没有兜底色/字体（这是定义：layout 不写身份段；色彩与字体在 策略师确认阶段现场决策）。
 
 ### Deck schema
 
@@ -119,6 +126,7 @@ page_types: [<cover, toc, chapter, content, ending, ...>]
 ---
 deck_id: <slug>
 kind: deck
+native_structure_mode: template
 summary: <一句话描述用途>
 canvas_format: <ppt169 | ...>
 page_count: <N>
@@ -207,7 +215,7 @@ primary_color: "<HEX>"
 |---|---|
 | 无 | 跳过 Step 3，走自由设计 |
 | 只 brand | 复制 brand 全部，结构走自由设计 |
-| 只 layout | 复制 layout 全部，身份走自由设计（Strategist 八项确认 e/f/g 决策） |
+| 只 layout | 复制 layout 全部，身份走自由设计（策略师确认阶段 e/f/g 决策） |
 | 只 deck | 复制 deck 全部 |
 | brand + layout | brand 提供身份段 + layout 提供结构段，沿用 SKILL.md 现有 fusion 表 |
 | brand + deck | brand 段级覆盖 deck 的身份段，结构段与中间段从 deck 拿 |
@@ -218,7 +226,7 @@ primary_color: "<HEX>"
 
 合成默认是**段级整段替换**——例如 deck + brand 时，整个 Color Scheme / Typography / Logo / Voice / Icon Style 五段从 brand 拿，**不做字段级混搭**（即不会发生"primary 从 brand 拿、secondary 从 deck 拿"这类隐式混合）。
 
-字段级微调走 Strategist 八项确认这条已有路径——用户在 chat 里说"用 anthropic brand，但 primary 改成 #FF0000"，由 Strategist 在 e/g 现场调整，不在 Step 3 的 fusion 层加字段级语法。
+字段级微调走 策略师确认阶段这条已有路径——用户在 chat 里说"用 anthropic brand，但 primary 改成 #FF0000"，由 Strategist 在 e/g 现场调整，不在 Step 3 的 fusion 层加字段级语法。
 
 ### 同类多份 = git 冲突解决
 
@@ -262,15 +270,17 @@ AI: 你给了两个 brand，检测到段级冲突：
 
 | 用户路径指向 | Step 3 行为（按 kind 分支）|
 |---|---|
-| `kind: brand` | 复制 design_spec + logos + asset 子目录到 `<project>/templates/` |
-| `kind: layout` | 复制 design_spec + SVG roster + assets 到 `<project>/templates/` |
-| `kind: deck` | 复制 design_spec + SVG roster + logos + 全部 assets 到 `<project>/templates/` |
-| 多路径 | 按上表合成单份 `design_spec.md` + 各源的 SVG/logo 合并复制 |
+| `kind: brand` | design_spec + 非图片资产 → `<project>/templates/`；logo / 插画 / 图标**位图** → `<project>/images/` |
+| `kind: layout` | design_spec + SVG roster → `<project>/templates/`；**位图**资产 → `<project>/images/` |
+| `kind: deck` | design_spec + 模板 SVG → `<project>/templates/`；logo / 背景 / 其它**位图** → `<project>/images/` |
+| 多路径 | 按上表合成单份 `design_spec.md`；SVG 进 `templates/`、位图进 `images/` 合并复制 |
+
+> 位图统一进项目 `images/`（和 AI / 网络 / 用户图片同一个运行期图片池，SVG 里走 `../images/`）；`templates/` 只放 spec 和模板 SVG 等供 Strategist/Executor 阅读、不被直接渲染的参考材料。
 | 同类多份 | 按上节"git 冲突解决"问答，得到合成结果 |
 
-### Strategist 八项确认在不同 kind 下的收窄
+### 策略师确认阶段在不同 kind 下的收窄
 
-Deck 路径下用户已经拿到完整方案，八项确认收窄到"目标受众 / 页数 / 大纲 / 调性微调"等 deck 内容相关字段；其他字段直接从锁定值复用。具体收窄规则落在 `references/strategist.md` 与 `spec_lock_reference.md`。
+Deck 路径下用户已经拿到完整方案，策略师确认阶段收窄到"目标受众 / 页数 / 大纲 / 调性微调"等 deck 内容相关字段；其他字段直接从锁定值复用。具体收窄规则落在 `references/strategist.md` 与 `spec_lock_reference.md`。
 
 ---
 
@@ -287,6 +297,6 @@ Deck 路径下用户已经拿到完整方案，八项确认收窄到"目标受�
 
 ## 七、不做（与本文 framing 配套的拒绝列表）
 
-- **不在 fusion 层支持字段级覆盖语法** —— 字段级微调走 Strategist 八项确认这条已有路径
+- **不在 fusion 层支持字段级覆盖语法** —— 字段级微调走 策略师确认阶段这条已有路径
 - **不为同类三份及以上设计批量冲突解决** —— 用户先在 chat 里收敛到两份
 - **不引入双名映射表** —— 模板命名按其品牌/场景母语（中文模板用中文名，英文模板用 snake_case），不强制统一
