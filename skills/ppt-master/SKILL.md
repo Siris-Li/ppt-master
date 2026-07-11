@@ -83,7 +83,7 @@ description: >
 | Script | Purpose |
 |--------|---------|
 | `${SKILL_DIR}/scripts/source_to_md.py` | Unified source-to-Markdown dispatcher — default Step 1 entry for explicit file(s) or URL(s) |
-| `${SKILL_DIR}/scripts/pptx_intake.py` | Standard PPTX intake enrichment — canvas / identity / slide geometry / tables / native chart data |
+| `${SKILL_DIR}/scripts/pptx_intake.py` | Standard PPTX intake enrichment — canvas / identity / slide geometry / tables / native chart data / SmartArt structure |
 | `${SKILL_DIR}/scripts/project_manager.py` | Project init / validate / manage |
 | `${SKILL_DIR}/scripts/icon_sync.py` | Copy chosen library icons into `<project>/icons/` at selection time; missing names reported + non-zero (re-pick gate) |
 | `${SKILL_DIR}/scripts/analyze_images.py` | Image analysis |
@@ -202,7 +202,7 @@ For PPTX sources, `import-sources` automatically runs the standard intake enrich
 python3 ${SKILL_DIR}/scripts/pptx_intake.py <project_path>/sources/<source.pptx> -o <project_path>/analysis
 ```
 
-For each PPTX it writes `<stem>.identity.json` (canvas, theme palette/fonts, observed usage) and `<stem>.slide_library.json` (text slots, geometry, native tables, native chart caches), and merges that deck's Strategist-facing digest into the single multi-deck index `analysis/source_profile.json` (`decks[]`, one self-contained entry per source deck, with prefixed artifact pointers). In the main generation path these are source facts and recommendation candidates, not replica constraints; beautify and template-fill workflows decide separately which fields become locked constraints.
+For each PPTX it writes `<stem>.identity.json` (canvas, theme palette/fonts, observed usage) and `<stem>.slide_library.json` (text slots, geometry, native tables, native chart caches, SmartArt nodes/connections), and merges that deck's Strategist-facing digest into the single multi-deck index `analysis/source_profile.json` (`decks[]`, one self-contained entry per source deck, with prefixed artifact pointers). In the main generation path these are source facts and recommendation candidates, not replica constraints; beautify and template-fill workflows decide separately which fields become locked constraints.
 
 Multi-deck: several PPTX files may be imported into one main-pipeline project — each gets its own `<stem>.*` artifacts and a deck entry in `source_profile.json`. `source_profile.json` stays the single must-read index (one entry for a one-deck project, several for a combined-source project). Stems must be distinct; re-importing the same stem replaces that deck's entry. The beautify / template-fill workflows remain single-deck (1:1 to one chosen source deck) and read that deck's `<stem>.*` artifacts.
 
@@ -222,11 +222,12 @@ Multi-deck: several PPTX files may be imported into one main-pipeline project �
 
 Do **not** reinterpret this boundary as 1:1 redesign or free SVG generation. Use `template-fill` for raw PPTX template + generated PPTX requests; use `beautify` only when the source deck's page count, order, and wording are preserved.
 
-**Template flow triggers ONLY on explicit directory paths** supplied by the user in their initial message. The trigger rule is mechanical, not interpretive:
+**Template flow triggers ONLY on explicit directory paths** supplied by the user in their initial message, plus one narrow workflow handoff: a project-scoped `create-template` run in the current conversation may pass its exact validated `<project>/templates/` output directly into this Step. The trigger rule is mechanical, not interpretive:
 
 | User input contains | Step 3 action |
 |---|---|
-| One or more explicit template directory paths (e.g. `skills/ppt-master/templates/layouts/academic_defense/`, `./.skill/ppt-master/projects/foo/template/`, or any other absolute / relative path; each resolves to a directory containing `design_spec.md` with `kind: brand` / `kind: layout` / `kind: deck` in its YAML frontmatter) | Read each spec's `kind`, dispatch per the kind matrix below, fuse if multiple |
+| One or more explicit template directory paths (each resolves to a directory containing `design_spec.md` with `kind: brand` / `kind: layout` / `kind: deck` in its YAML frontmatter) | Read each spec's `kind`, dispatch per the kind matrix below, fuse if multiple |
+| Current `create-template` workflow just completed project scope and validated its exact `<project>/templates/` output | Consume that single directory in place; it cannot join multi-path fusion |
 | Anything else — bare template names ("用 academic_defense"), style descriptions ("麦肯锡风格"), brand mentions ("招商银行风格"), vague intent ("想用个模板"), or silence | Skip Step 3, free design |
 
 There is no slug matching, no name lookup, no fuzzy resolution. A name without a path does not trigger — the user must give a path the AI can `cd` into.
@@ -266,15 +267,39 @@ The architecture has three independent reference bundles. Full schema in [`docs/
 | `kind: deck` | `design_spec.md` + template SVGs → `<project>/templates/`; logos / backgrounds / other **bitmaps** → `<project>/images/`. Strategist locks all segments; Strategist confirmation stage narrows to deck-content fields (audience / page count / outline / tone tweaks). |
 
 ```bash
-TEMPLATE_DIR=<user-supplied path>
+TEMPLATE_DIR="<user-supplied path>"
+PROJECT_TEMPLATES="<project_path>/templates"
+resolve_path() {
+  python3 -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).resolve())' "$1"
+}
 # Bitmaps join the project's single runtime image pool (images/, referenced as
 # ../images/); the spec + template SVGs + other non-image assets stay in
 # templates/ as design reference the Strategist/Executor read but never render.
-cp -r ${TEMPLATE_DIR}/* <project_path>/templates/
-find <project_path>/templates -type f \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.gif' -o -iname '*.webp' -o -iname '*.bmp' \) -exec mv {} <project_path>/images/ \;
+if [ "$(resolve_path "${TEMPLATE_DIR}")" = "$(resolve_path "${PROJECT_TEMPLATES}")" ]; then
+  # Project-scoped create-template output is already staged in place.
+  true
+else
+  cp -r "${TEMPLATE_DIR}"/. "${PROJECT_TEMPLATES}/"
+  find "${PROJECT_TEMPLATES}" -type f \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.gif' -o -iname '*.webp' -o -iname '*.bmp' \) -exec mv {} "<project_path>/images/" \;
+fi
 ```
 
 The same split applies to all three kinds — bitmaps always land in `images/`, the rest in `templates/`. The spec's `kind` field tells Strategist how to read the `templates/` side; downstream code doesn't distinguish. (Template SVGs in `templates/` are reference material only — the rendered pages live in `svg_output/` and reference images via `../images/`.)
+
+When `create-template` used project output scope, its directory is already the
+target project's `templates/` root and its bitmap/icon runtime copies are already
+in their final project pools. Resolve both paths before copying: equality means
+**in-place consumption**, so skip both the copy and bitmap move. An in-place
+directory is one complete bundle and cannot participate in multi-path fusion;
+use external library bundles for fusion. Never place the local bundle under a
+nested `templates/local_master/` directory because the confirmation and quality
+gates read the project `templates/` root.
+
+A project-scoped bundle belongs only to its target project: its SVGs may refer
+to sibling `../images/` and runtime `../icons/` pools that are outside the
+template root. Do not copy another project's `templates/` root as an external
+bundle. For cross-project reuse, recreate/promote the design with
+`create-template` library scope so the package is self-contained.
 
 Legacy template packages may ship `native_structure.json` + `source_template.pptx`; keep the pair together in `<project>/templates/` for backward-compatible `preserve` export. Current `create-template` output does not package this pair: it rebuilds complete, explicitly layered SVG templates instead. During fusion, never mix one legacy contract with another template's source package.
 
@@ -335,13 +360,13 @@ Single-path Step 3 does **not** add provenance (the source is self-evident from 
 
 The fused frontmatter `kind` describes the resulting bundle: `deck` when both identity and structure are present, `layout` when only structure is present, and `brand` when only identity is present. Keep this field accurate; the Strategist confirmation server uses it to show template adherence only for bundles that actually own page structure.
 
-**✅ Checkpoint — Default path proceeds to Step 4 without user interaction. If the user supplied one or more explicit template paths, those have been dispatched (or fused) into `<project_path>/templates/` before advancing.**
+**✅ Checkpoint — Default path proceeds to Step 4 without user interaction. If the user supplied one or more explicit template paths, those have been copied, staged in place, or fused into `<project_path>/templates/` before advancing.**
 
 ---
 
 ### Step 4: Strategist Phase (MANDATORY — cannot be skipped)
 
-🚧 **GATE**: Step 3 complete; default free-design path taken, or (if triggered) template files copied into the project.
+🚧 **GATE**: Step 3 complete; default free-design path taken, or (if triggered) template files copied or confirmed in place in the project.
 
 First, read the role definition:
 ```
@@ -352,9 +377,9 @@ Read references/strategist.md
 
 **Artifact ownership**: fact-channel and source/derived artifact boundaries are defined in [`references/artifact-ownership.md`](references/artifact-ownership.md). This Step uses those ownership rules; it does not redefine them.
 
-**`<project_path>/analysis/` is the project's intermediate-analysis folder: the canonical home for machine-extracted source/asset facts — the PPTX intake bundle (`source_profile.json` index + per-deck `<stem>.identity.json` / `<stem>.slide_library.json`) and `image_analysis.csv`. It holds facts, not design contracts — `design_spec.md` / `spec_lock.md` stay at the project root.** The MUST-read contract covers only the **compact structured data files (`.json` / `.csv`)**; other artifacts that may live under `analysis/` (e.g. a beautify `source_svg_import/` vector reference package) are NOT bulk-read — they are read selectively only when a specific workflow step calls for them. Before the Strategist confirmation stage, Strategist MUST read the auto-extracted fact files already in `analysis/` — currently `source_profile.json` (PPTX intake), when present. This file is the multi-deck index: read it once for the `decks[]` digests (canvas / chart / table entries per source deck), then open a specific deck's `<stem>.identity.json` / `<stem>.slide_library.json` only if you need its full raw facts. Use these entries as **factual source context** (format default + content facts); when several decks are present, synthesize across all of them. The source's **palette / typography / visual identity are a reference, not a constraint**: the main pipeline may inherit them where they fit the content and the confirmed style, or design fresh where they don't — the Strategist's judgment, never an obligation to either keep or discard. (Template-fill preserves the native source design by editing cloned slides directly; beautify defaults to the source identity but still follows the confirmed values; the main pipeline treats source identity as reference only and defaults to fresh design.) (`image_analysis.csv` lands later, at the image-analysis step below, and is the authoritative regenerated image-fact view there — re-derived from the live `images/` folder, not a durable store.)
+**`<project_path>/analysis/` is the project's intermediate-analysis folder: the canonical home for machine-extracted source/asset facts — the PPTX intake bundle (`source_profile.json` index + per-deck `<stem>.identity.json` / `<stem>.slide_library.json`) and `image_analysis.csv`. It holds facts, not design contracts — `design_spec.md` / `spec_lock.md` stay at the project root.** The MUST-read contract covers only the **compact structured data files (`.json` / `.csv`)**; other artifacts that may live under `analysis/` (e.g. a beautify `source_svg_import/` vector reference package) are NOT bulk-read — they are read selectively only when a specific workflow step calls for them. Before the Strategist confirmation stage, Strategist MUST read the auto-extracted fact files already in `analysis/` — currently `source_profile.json` (PPTX intake), when present. This file is the multi-deck index: read it once for the `decks[]` digests (canvas / chart / table / SmartArt entries per source deck), then open a specific deck's `<stem>.identity.json` / `<stem>.slide_library.json` only if you need its full raw facts. Use these entries as **factual source context** (format default + content facts); when several decks are present, synthesize across all of them. The source's **palette / typography / visual identity are a reference, not a constraint**: the main pipeline may inherit them where they fit the content and the confirmed style, or design fresh where they don't — the Strategist's judgment, never an obligation to either keep or discard. (Template-fill preserves the native source design by editing cloned slides directly; beautify defaults to the source identity but still follows the confirmed values; the main pipeline treats source identity as reference only and defaults to fresh design.) (`image_analysis.csv` lands later, at the image-analysis step below, and is the authoritative regenerated image-fact view there — re-derived from the live `images/` folder, not a durable store.)
 
-**Channel ownership — read each fact once from its owning channel.** In the main pipeline the **content contract is the content-type files in `sources/`** — primarily `<stem>.md`, but also any user-supplied content the import archived there: `.md` / `.markdown` / `.txt` / `.csv` / `.tsv` / `.json` / `.jsonl` / `.yaml` / `.yml` (a `metrics.json` or `data.csv` may carry core content — judge by what the file holds). Text, tables, and chart data values come from these (`ppt_to_md` now transcribes native chart data into Markdown tables). **Do NOT read pipeline sidecars in `sources/` as content**: `*.conversion_profile.json` (conversion audit) and `*_files/image_manifest.json` (asset index) are process metadata — open them only to audit a conversion or resolve assets, never as slide content. Converted-source originals archived in `sources/` (`.pdf` / `.pptx` / `.docx` / `.xlsx` / `.html` / `.epub` / `.tex` / `.rst` / `.ipynb` / `.typ`, etc.) are read via their converted `<stem>.md`, not scanned directly in the main pipeline. The `analysis/` chart / table entries are a **structural digest** for outline decisions (which slides carried charts, type, series names) — not a second copy of the values; do NOT also pull chart values from `<stem>.slide_library.json` in the main pipeline. The `<stem>.slide_library.json` full structured data is owned by the direct-PPTX workflows: template-fill uses it as the native fill contract; beautify uses it for native chart / table data while keeping slide text from the Markdown.
+**Channel ownership — read each fact once from its owning channel.** In the main pipeline the **content contract is the content-type files in `sources/`** — primarily `<stem>.md`, but also any user-supplied content the import archived there: `.md` / `.markdown` / `.txt` / `.csv` / `.tsv` / `.json` / `.jsonl` / `.yaml` / `.yml` (a `metrics.json` or `data.csv` may carry core content — judge by what the file holds). Text, tables, chart data values, and SmartArt node wording come from these (`ppt_to_md` transcribes native charts as Markdown tables and SmartArt nodes as hierarchical bullets). **Do NOT read pipeline sidecars in `sources/` as content**: `*.conversion_profile.json` (conversion audit) and `*_files/image_manifest.json` (asset index) are process metadata — open them only to audit a conversion or resolve assets, never as slide content. Converted-source originals archived in `sources/` (`.pdf` / `.pptx` / `.docx` / `.xlsx` / `.html` / `.epub` / `.tex` / `.rst` / `.ipynb` / `.typ`, etc.) are read via their converted `<stem>.md`, not scanned directly in the main pipeline. The `analysis/` chart / table / diagram entries are a **structural digest** for outline decisions (which slides carried charts, tables, or SmartArt; chart types / series names; SmartArt layout and hierarchy) — not a second copy of the content values; do NOT also pull chart values or SmartArt wording from `<stem>.slide_library.json` in the main pipeline. The `<stem>.slide_library.json` full structured data is owned by the direct-PPTX workflows: template-fill uses it as the native fill contract while preserving SmartArt unchanged; beautify uses it for native chart / table data and SmartArt relationships while keeping all wording from the Markdown.
 
 **Strategist confirmation stage** (full template: `templates/design_spec_reference.md`):
 
@@ -787,6 +812,21 @@ python3 ${SKILL_DIR}/scripts/svg_to_pptx.py <project_path>
 > template use stay on this deterministic route. Adaptive pages may define new
 > layout keys, but they repeat the same Master layer and one internally
 > consistent Layout/placeholder contract.
+> Template export also installs the locked `typography.title` size into every
+> Master `titleStyle` level and the locked `typography.body` size into every
+> `bodyStyle` and `otherStyle` level. Each text-bearing Layout placeholder also
+> writes its prototype run size to `a:lstStyle/a:lvl1pPr/a:defRPr@sz`, so a
+> newly inserted or reset placeholder keeps that Layout's local size before it
+> falls back to the Master. Generated slide runs and Layout prompt runs keep
+> their direct sizes. Missing or invalid locked title/body sizes fail template
+> export. Baseline, preserve, and flat modes do not apply either text-default
+> update.
+> Before publishing the temporary PPTX, template export reopens the finished
+> package and verifies `Presentation → Master ↔ Layout ← Slide` registration,
+> named custom Layout parts and content types, collision-free placeholder
+> identities, prototype bounds, and prompt/level-one sizes. This read-back gate
+> is template-only and does not compare later same-Layout slides' local geometry
+> or direct text formatting.
 > In template mode, `pptx_layouts` contains exactly one locked
 > layout key/name per page; reuse a key for a shared structure instead of
 > creating one key per content instance.
@@ -812,11 +852,26 @@ python3 ${SKILL_DIR}/scripts/svg_to_pptx.py <project_path>
 > claiming editability.
 
 **Optional animation flags** (page transitions are on by default; per-element entrance is off by default — turn it on only when the user asks for it):
-- `-t <effect>` — page transition. Default `fade`. Options: `fade` / `push` / `wipe` / `split` / `strips` / `cover` / `random` / `none`.
+- `-t <effect>` — page transition. Default `fade`. Options: `fade` / `push` / `wipe` / `split` / `strips` / `cover` / `random` / `none`. `none` removes only the visual transition; an explicit automatic advance remains valid.
 - `-a <effect>` — per-element entrance animation. **Default `none`** — pages appear as a whole, no auto-firing element builds (the unsolicited cascade reads as the "AI deck" tell). Opt in with `auto` (map effect from group id: chart→wipe, card-/step-/pillar-→fly, title/takeaway→fade; image-like ids `hero` / `figure-` / `image` / `img-` / `kpi` cycle a richer pool — zoom / dissolve / circle / box / diamond / wheel — so multiple images vary across the deck), a specific effect like `fade`, or `mixed` for the legacy 16-effect cycle. Requires top-level `<g id="...">` groups (already required by Executor).
 - `--animation-trigger {on-click,with-previous,after-previous}` — Start mode (matches PowerPoint's animation-pane Start dropdown). Default `after-previous` (click-free cascade; pace via `--animation-stagger`). Use `on-click` for presenter-paced reveals, or `with-previous` for all-at-once.
 - `--animation-config <path>` — optional object-level sidecar. Default: `<project_path>/animations.json` when present.
-- `--auto-advance <seconds>` — kiosk-style auto-play.
+- `--auto-advance <seconds>` — kiosk-style auto-play. Click remains enabled, so click or timer may advance the slide.
+
+**Animation compatibility gate**: the default element animation remains `none`.
+When animation is enabled, unknown effects/modes/triggers, invalid numeric or
+order values, missing slide/group references, and explicit structural layer,
+static-role, or static-placeholder targets fail export; they never downgrade
+or disappear silently. An explicit
+sidecar group may override only the legacy chrome-name heuristic. `random`
+resolution is stable for the same effective input; with `--conversion-trace`,
+its resolved rows are written to the trace. Generated export performs per-slide semantic
+read-back plus package timing/`p:cTn`/`p:spTgt` validation. Narration merges
+audio timing into the existing DOM and preserves animation rows. Direct-PPTX
+routes preserve source object animation, compare its object-animation fingerprint
+before/after allowed edits, and validate structure; they do not author
+animation effects. The exact 22 tuples and OOXML rules live in
+[`scripts/docs/pptx-animations.md`](scripts/docs/pptx-animations.md).
 
 **Optional custom animations** (only when the user asks to tune animation order/effects/timing for specific objects):
 
@@ -829,6 +884,8 @@ Run the standalone [`generate-audio`](workflows/generate-audio.md) workflow. The
 Do NOT call `notes_to_audio.py` directly without going through the workflow — `--voice` / `--voice-id` is required and the workflow produces the locale/provider-aware recommendation that makes the choice meaningful.
 
 Full effect list, anchor logic, and limits: [`references/animations.md`](references/animations.md).
+The compatibility contract covers PowerPoint OOXML; do not promise identical
+animation playback in Keynote or other presentation applications.
 
 > ❌ **NEVER** substitute `cp` for `finalize_svg.py` — finalize performs multiple critical processing steps
 > ❌ **NEVER** use `-s final` for a release export. It is a diagnostic comparison only; the supported native route reads `svg_output/`.

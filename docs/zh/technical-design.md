@@ -190,8 +190,8 @@ SVG 也是唯一同时满足流程中所有角色需要的格式：**AI 能可�
 
 | 通道 | 产物 | 所有者 | 用途 |
 |---|---|---|---|
-| 内容契约 | `sources/` 内容型文件（以 `<stem>.md` 为主） | `source_to_md/*` 转换器 + `import-sources` | 文本、表格、图表数值、引用和源材料叙事 |
-| 结构化分析 | `analysis/*.json` / `analysis/*.csv` | intake 与分析工具 | PPTX 身份信息、页面几何、原生表格/图表、图片尺寸/色彩/主体 |
+| 内容契约 | `sources/` 内容型文件（以 `<stem>.md` 为主） | `source_to_md/*` 转换器 + `import-sources` | 文本、表格、图表数值、SmartArt 节点文字、引用和源材料叙事 |
+| 结构化分析 | `analysis/*.json` / `analysis/*.csv` | intake 与分析工具 | PPTX 身份信息、页面几何、原生表格/图表、SmartArt 关系、图片尺寸/色彩/主体 |
 
 对 PPTX 源文件，`project_manager.py import-sources` 会同时运行 `ppt_to_md.py` 和 `pptx_intake.py`。Markdown 仍然是主生成流水线的内容源；intake bundle 会写出 `<stem>.identity.json`、`<stem>.slide_library.json`，并把紧凑的多 deck 索引合并到 `analysis/source_profile.json`。Strategist 默认读取这个紧凑索引来获取源事实；只有特定工作流需要原始细节时，才打开单个 deck 的原始 artifact。这个边界很重要：主流水线可以重构页数和叙事，而 `template-fill` 与 `beautify` 会把同一批 intake 事实中的一部分提升为更强约束。
 
@@ -456,7 +456,13 @@ PowerPoint 的 DrawingML 是 SVG 表达力的严格子集。在转换器已实�
 
 **为什么可复用版式必须依赖显式 SVG 元数据。** `--pptx-structure template` 是生成型 deck 需要继续作为 PowerPoint 模板复用时的 opt-in 路径。最终 slide SVG 在根节点声明 layout key，只允许根节点的直接子元素标记 master/layout layer，并在应成为版式占位框的 slide-local 原型上附加类型语义。导出器会验证共享 master 与同 key layout 的声明在结构和视觉上完全一致，再生成真实 layout part 与 `p:ph` 引用；所有未标记对象仍保持 slide-local。这是确定性的结构编译，不是根据视觉相似度猜模板。
 
+**为什么 template 模式把文字默认值分在 Master 与 Layout 两层。** Template 导出把锁定的 `typography.title` 字号写入 Master `p:titleStyle` 的全部层级，把 `typography.body` 字号写入 `p:bodyStyle` / `p:otherStyle` 的全部层级。每个生成的 Layout 文字占位符还会把原型首个直接 run 的字号写入 `a:lstStyle/a:lvl1pPr/a:defRPr@sz`，同时保留提示文字的直接字号。这样，一级占位符文字在插入或重置后仍继承版式特定的字号；生成 Slide 上的直接 run 保持不变。缺少 title/body 锁会让 template 导出失败，`baseline`、`preserve`、`flat` 则维持原有行为。
+
+**为什么 template 导出要在发布前回读候选包。** 元数据预检可以证明作者合同成立，却不能证明 package 序列化完整保留了所有 relationship 与注册信息。因此 template 模式会重新打开临时 PPTX，校验 Slide → Layout → Master 关系链、Layout 身份、占位符类型与有效索引、可复用边界，以及提示文字和一级默认字号。只有通过读回校验的候选包才会移动到目标输出；其他结构模式不受影响。
+
 **为什么可复用模板统一重建显式 SVG 结构。** `pptx_template_import.py` 输出分层的 Master/Layout/Slide 参考和源结构事实；`create-template` 据此重建一个干净 Master 与语义 Layout，并把它们重复标注在可独立预览的完整 SVG 中，不再封装原 PPTX。严格套用保持所选 Layout 契约，自适应使用可在同一 Master 下新建显式 Layout；两者都走确定性的 `template` 导出。`preserve` 只为旧项目保留兼容读取。
+
+**为什么项目本地薄模板只是输出政策，不是另一种结构模式。** `create-template` 仍以写入索引的 `library` 为默认，也可以把同一份已校验合同直接写到已初始化项目的 `templates/` 根目录。项目位图进入 `images/`，抽取图标同时保留 package 副本与运行时副本，且不修改任何全局索引。主管线 Step 3 发现模板源目录与目标根目录相同时原地消费。两种输出范围仍走 `template + adaptive` 或 `template + strict`；导出器没有项目本地分支。
 
 **为什么模板 SVG 保持完整却仍能编译成版式。** 每张生成 SVG 都是可独立预览的完整 slide，因此会重复携带继承的 Master/Layout 视觉和可选择的 Slide 内容。`page_layouts` 指定输入参考，`pptx_layouts` 指定输出版式，两者在模板路线中逐页齐全。严格模式保持所选契约；自适应模式可在同一 Master 下锁定新 Layout。导出器移除重复继承层并生成真实 Master/Layout，实际内容仍留在 Slide。
 

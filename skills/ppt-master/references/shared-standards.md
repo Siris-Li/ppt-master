@@ -13,7 +13,7 @@ Other files link here instead of restating its contracts.
 | §4 Required Page Contract and Conditional Packaging | Complete-page authority, semantic markers, editable text/grouping, and package promotion | Required / Conditional |
 | §5 Workflow Authority | Pointer to the serial post-processing/export procedure | Workflow pointer |
 | §6 Advanced SVG Effects and Authoring Techniques | Color/alpha, gradients, shadows, glow, overlays, lines, text treatments, transforms, freeform geometry, chart geometry, and constructed visual styles | Contract + optional recipes |
-| §7 Conditional PPT Interfaces | Pattern fills, native tables/charts, and Master/Layout/placeholder metadata | Conditional |
+| §7 Conditional PPT Interfaces | Pattern fills, native tables/charts, Master text styles, and Master/Layout/placeholder metadata | Conditional |
 | §8 Scope Boundary | Concerns intentionally owned by another reference or workflow | Boundary |
 
 **Advanced capability index**:
@@ -1075,7 +1075,34 @@ match that row. Strict uses the selected template key/name. Adaptive may create
 a new key/name while repeating the same Master contract. Reuse one layout key
 only when pages share the same static Layout layer and placeholder contract;
 different content is not a reason to create a new layout. Direct diagnostic
-exports may pass the CLI flag without a spec lock.
+exports may select the mode with the CLI flag instead of a locked
+`pptx_structure.mode` row, but still require `spec_lock.md` typography
+`title` / `body` rows.
+
+**Master text-style contract**: Template mode requires numeric `title` and
+`body` rows under `spec_lock.md` `typography`. Export maps the locked `title`
+size to every `a:defRPr` in Master `p:titleStyle`, and maps the locked `body`
+size to every level in both `p:bodyStyle` and `p:otherStyle`.
+
+| Master style | Locked source | XML field changed |
+|---|---|---|
+| `p:titleStyle` | `typography.title` | Every `a:defRPr@sz` |
+| `p:bodyStyle` | `typography.body` | Every `a:defRPr@sz` |
+| `p:otherStyle` | `typography.body` | Every `a:defRPr@sz` |
+
+**Hard rule — narrow scope**: This Master update changes only Master
+`p:txStyles//a:defRPr@sz`. It does not rewrite direct run sizes on generated
+slides, so the initial slide rendering remains controlled by the authored SVG.
+Missing `title` or `body` rows fail template export. `baseline`, `preserve`,
+and `flat` modes do not apply this Master text-style update.
+
+**Layout level-one text-default contract**: For every text-bearing placeholder
+whose first prototype run has a direct `a:rPr@sz`, template export copies that
+size to the generated Layout prompt run and
+`p:txBody/a:lstStyle/a:lvl1pPr/a:defRPr@sz`. It does not rewrite Slide direct
+runs or Layout levels 2–9. This preserves the layout-specific size when
+level-one placeholder text is inserted or reset; placeholders without a direct
+prototype size remain unchanged.
 
 | Metadata | Placement | Behavior |
 |---|---|---|
@@ -1122,19 +1149,37 @@ by this solid-background rule.
 
 `title` is normally type-matched without an index in reconstructed layouts; if
 an imported source title explicitly has one, preserve that exact index. Every
-indexed placeholder on one layout uses a unique non-negative index. Template
+indexed placeholder on one layout uses a unique OOXML UInt32 index. Template
 export writes the semantic type on both the Layout and Slide placeholder
 (except `obj`, whose OOXML default is already
-`obj`) so PowerPoint and `python-pptx` retain the same identity. A `date`
-placeholder also enables the layout date flag and gets a
-`datetimeFigureOut` field in the reusable Layout definition; the current
-Slide keeps its authored date content.
+`obj`) so PowerPoint and `python-pptx` retain the same identity. Date, footer,
+and slide-number placeholders enable their matching Layout `p:hf` flags; a
+date placeholder also gets a `datetimeFigureOut` field in the reusable Layout
+definition. The current Slide keeps its authored date content.
+
+Because an omitted `p:ph@idx` has the effective value `0`, an omitted-index
+title reserves `0`; no other placeholder on that Layout may use the same
+effective index.
 
 **Placeholder prototype**: The first slide using a layout key supplies that
 layout's placeholder formatting. `data-pptx-placeholder-bounds` supplies the
 reusable frame; when omitted, the exporter uses the prototype object's native
 DrawingML bounds. Repeat the same placeholder ids/types on every slide using
 that layout. Actual slide content and local geometry may differ.
+
+**Final-package read-back gate**: After writing the temporary template-mode
+PPTX and before publishing it, export reopens the package and verifies that
+each Slide targets exactly one Layout, one layout key always resolves to the
+same part, different keys do not collapse onto one part, and every Layout is
+registered through its Master and the Presentation. It also verifies the
+Layout picker name/content type, placeholder type and effective index,
+matching `p:hf` flags, prototype-derived or explicitly overridden frame,
+direct prompt size, and level-one default size. Later slides may keep different
+slide-local geometry; only the reusable Layout frame is checked against the
+explicit/prototype contract. Any mismatch fails export without replacing the
+requested output.
+This gate applies only to `template`; `baseline`, `preserve`, and `flat` retain
+their existing behavior.
 
 **Static structure consistency**: Repeat the same master element ids on every
 slide and the same layout element ids on every slide sharing a layout. Their
