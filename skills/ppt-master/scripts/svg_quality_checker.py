@@ -21,6 +21,7 @@ from collections import Counter, defaultdict
 from xml.etree import ElementTree as ET
 
 from console_encoding import configure_utf8_stdio
+from svg_to_pptx.text_contract import TextContractError, validate_text_contracts
 
 configure_utf8_stdio()
 
@@ -53,14 +54,24 @@ else:
 
 try:
     from svg_to_pptx.drawingml.utils import (
+        IDENTITY_MATRIX as _IDENTITY_MATRIX,
+        matrix_multiply as _matrix_multiply,
+        parse_transform_matrix as _parse_transform_matrix,
         parse_font_family as _parse_export_font_family,
         parse_inline_style as _parse_inline_style,
         parse_svg_color as _parse_export_color,
+        rect_to_dml_xfrm as _rect_to_dml_xfrm,
+        validate_dml_shape_matrix as _validate_dml_shape_matrix,
     )
 except ImportError:
+    _IDENTITY_MATRIX = None
+    _matrix_multiply = None
+    _parse_transform_matrix = None
     _parse_export_font_family = None
     _parse_inline_style = None
     _parse_export_color = None
+    _rect_to_dml_xfrm = None
+    _validate_dml_shape_matrix = None
 
 try:
     from svg_to_pptx.drawingml.converter import (
@@ -68,6 +79,33 @@ try:
     )
 except ImportError:
     _collect_unsupported_visuals = None
+
+try:
+    from svg_to_pptx.drawingml.elements import (
+        validate_preset_geometry_metadata as _validate_preset_geometry_metadata,
+    )
+except ImportError:
+    _validate_preset_geometry_metadata = None
+
+try:
+    from pptx_to_svg.preset_authoring import (
+        AUTHORING_ATTR as _AUTHORING_ATTR,
+        validate_authored_preset_tree as _validate_authored_preset_tree,
+    )
+except ImportError:
+    _AUTHORING_ATTR = 'data-pptx-authoring'
+    _validate_authored_preset_tree = None
+
+try:
+    from pptx_shapes import (
+        CONNECTOR_PRESET_TYPES as _CONNECTOR_PRESET_TYPES,
+        resolve_preset_preview_hash as _resolve_preset_preview_hash,
+        svg_preset_preview_fingerprint as _svg_preset_preview_fingerprint,
+    )
+except ImportError:
+    _CONNECTOR_PRESET_TYPES = frozenset()
+    _resolve_preset_preview_hash = None
+    _svg_preset_preview_fingerprint = None
 
 try:
     from svg_to_pptx.native_objects import (
@@ -89,6 +127,15 @@ try:
     )
 except ImportError:
     _native_object_marker_warnings = None
+
+try:
+    from svg_to_pptx.native_objects.marker_status import (
+        native_marker_release_block_reason as _native_marker_release_block_reason,
+        native_marker_status_errors as _native_marker_status_errors,
+    )
+except ImportError:
+    _native_marker_release_block_reason = None
+    _native_marker_status_errors = None
 
 try:
     from svg_to_pptx.semantic_markers import (
@@ -130,9 +177,12 @@ try:
         load_native_structure_contract as _load_native_structure_contract,
         load_pptx_structure_lock as _load_pptx_structure_lock,
         native_structure_lock_errors as _native_structure_lock_errors,
+        parse_optional_layout_slides as _parse_optional_layout_slides,
         parse_preserve_slides as _parse_preserve_structure_slides,
+        parse_template_slide as _parse_template_structure_slide,
         parse_template_slides as _parse_template_structure_slides,
         template_lock_errors as _template_lock_errors,
+        template_prototype_errors as _template_prototype_errors,
         validate_template_svg as _validate_template_structure_svg,
     )
 except ImportError:
@@ -142,9 +192,12 @@ except ImportError:
     _load_native_structure_contract = None
     _load_pptx_structure_lock = None
     _native_structure_lock_errors = None
+    _parse_optional_layout_slides = None
     _parse_preserve_structure_slides = None
+    _parse_template_structure_slide = None
     _parse_template_structure_slides = None
     _template_lock_errors = None
+    _template_prototype_errors = None
     _validate_template_structure_svg = None
 
 try:
@@ -456,6 +509,12 @@ class SVGQualityChecker:
             # produce misleading errors on a broken document.
             root = self._parse_xml_root(content, result)
             if root is not None:
+                if root.get('transform'):
+                    result['errors'].append(
+                        'Root <svg> transform is unsupported; apply transforms '
+                        'to child elements or groups'
+                    )
+
                 # 1. Check viewBox
                 self._check_viewbox(root, result, expected_format)
 
@@ -485,6 +544,10 @@ class SVGQualityChecker:
 
                 # 7b. Reject visual elements the native converter cannot dispatch.
                 self._check_unsupported_visual_elements(root, result)
+
+                # 7c. Fail closed on invalid PPTX preset/adjustment metadata.
+                self._check_preset_geometry_metadata(root, result)
+                self._check_preset_geometry_transforms(root, result)
 
                 # 8. Check object-level animation anchor quality.
                 self._check_animation_group_ids(root, result)
@@ -857,7 +920,8 @@ class SVGQualityChecker:
                     f"<{tag} opacity> must be a numeric value from 0 to 1, got {raw_opacity!r}"
                 )
             if tag == 'g' and opacity < 1.0 and any(
-                descendant.get('data-pptx-native')
+                descendant.tag.rsplit('}', 1)[-1] != 'metadata'
+                and descendant.get('data-pptx-native')
                 for descendant in elem.iter()
             ):
                 result['warnings'].append(
@@ -1051,6 +1115,17 @@ class SVGQualityChecker:
 
     def _check_text_elements(self, content: str, root: ET.Element, result: Dict):
         """Check text elements and wrapping methods"""
+        try:
+            validate_text_contracts(
+                root,
+                merge_paragraphs=True,
+                source_name=result.get('file'),
+            )
+        except TextContractError as exc:
+            result['errors'].extend(
+                diagnostic.format() for diagnostic in exc.diagnostics
+            )
+
         # Count text and tspan elements
         text_count = content.count('<text')
         tspan_count = content.count('<tspan')
@@ -1264,6 +1339,172 @@ class SVGQualityChecker:
             f"{preview}{suffix}"
         )
 
+    def _check_preset_geometry_metadata(
+        self,
+        root: ET.Element,
+        result: Dict,
+    ) -> None:
+        """Validate round-trip preset metadata with the exporter's parser."""
+        marked = [
+            elem
+            for elem in root.iter()
+            if (
+                elem.get('data-pptx-prst') is not None
+                or elem.get('data-pptx-frame') is not None
+                or elem.get('data-pptx-geometry-status') is not None
+                or elem.get('data-pptx-geometry-reason') is not None
+                or elem.get('data-pptx-geometry-kind') is not None
+                or elem.get('data-pptx-custgeom') is not None
+                or elem.get('data-pptx-preview-sha256') is not None
+                or elem.get('data-pptx-shape-id') is not None
+                or elem.get('data-pptx-shape-scope') is not None
+                or elem.get('data-pptx-shape-style') is not None
+                or elem.get(_AUTHORING_ATTR) is not None
+                or any(attr.startswith('data-pptx-av-') for attr in elem.attrib)
+            )
+        ]
+        if not marked:
+            return
+        if _validate_preset_geometry_metadata is None:
+            result['errors'].append(
+                'Unable to import PPTX preset metadata validator; '
+                'cannot verify native shape restoration'
+            )
+            return
+
+        issues = set()
+        for elem in marked:
+            tag = _local_name(elem)
+            elem_id = elem.get('id')
+            label = f'<{tag} id="{elem_id}">' if elem_id else f'<{tag}>'
+            for error in _validate_preset_geometry_metadata(elem):
+                issues.add(f'{label} has invalid PPTX shape metadata: {error}')
+        if _validate_authored_preset_tree is None:
+            if any(
+                elem.get(_AUTHORING_ATTR) is not None
+                for elem in root.iter()
+            ):
+                issues.add(
+                    'Unable to import authored PPTX preset validator'
+                )
+        else:
+            for error in _validate_authored_preset_tree(root):
+                issues.add(f'Invalid authored PPTX preset: {error}')
+        if (
+            _svg_preset_preview_fingerprint is None
+            or _resolve_preset_preview_hash is None
+        ):
+            issues.add('Unable to import PPTX preset preview fingerprint validator')
+        else:
+            for elem in root.iter():
+                if (
+                    _local_name(elem) != 'g'
+                    or elem.get('data-pptx-object') not in {'shape', 'connector'}
+                    or elem.get('data-pptx-prst') is None
+                ):
+                    continue
+                try:
+                    expected = _resolve_preset_preview_hash(elem)
+                except ValueError as exc:
+                    elem_id = elem.get('id') or '(no id)'
+                    issues.add(
+                        f'<g id="{elem_id}"> has an invalid PPTX preset '
+                        f'preview contract: {exc}'
+                    )
+                    continue
+                if expected is None:
+                    continue
+                actual = _svg_preset_preview_fingerprint(elem)
+                if actual != expected:
+                    elem_id = elem.get('id') or '(no id)'
+                    issues.add(
+                        f'<g id="{elem_id}"> has a stale PPTX preset preview; '
+                        'update the native carrier or restore the generated detail paths'
+                    )
+        result['errors'].extend(sorted(issues))
+
+    def _check_preset_geometry_transforms(
+        self,
+        root: ET.Element,
+        result: Dict,
+    ) -> None:
+        """Reject preset transforms that DrawingML cannot represent exactly."""
+        helpers = (
+            _IDENTITY_MATRIX,
+            _matrix_multiply,
+            _parse_transform_matrix,
+            _rect_to_dml_xfrm,
+            _validate_dml_shape_matrix,
+        )
+        if any(helper is None for helper in helpers):
+            return
+
+        relevant: set[ET.Element] = set()
+
+        def mark_relevant(element: ET.Element) -> bool:
+            found = element.get('data-pptx-prst') is not None
+            for child in element:
+                found = mark_relevant(child) or found
+            if found:
+                relevant.add(element)
+            return found
+
+        mark_relevant(root)
+        issues = set()
+
+        def visit(element: ET.Element, parent_matrix) -> None:
+            if element not in relevant:
+                return
+            matrix = parent_matrix
+            transform = element.get('transform')
+            if transform:
+                try:
+                    local_matrix = _parse_transform_matrix(transform)
+                    matrix = _matrix_multiply(parent_matrix, local_matrix)
+                except ValueError as exc:
+                    issues.add(
+                        f'<{_local_name(element)}> has invalid preset '
+                        f'transform: {exc}'
+                    )
+                    return
+            if element.get('data-pptx-prst') is not None:
+                try:
+                    raw_frame = element.get('data-pptx-frame')
+                    if raw_frame:
+                        frame = tuple(
+                            float(part)
+                            for part in re.split(r'[\s,]+', raw_frame.strip())
+                        )
+                        if len(frame) != 4:
+                            raise ValueError(
+                                'data-pptx-frame must contain four numbers'
+                            )
+                        preset = element.get('data-pptx-prst') or ''
+                        _rect_to_dml_xfrm(
+                            frame[0],
+                            frame[1],
+                            frame[2],
+                            frame[3],
+                            matrix,
+                            preserve_degenerate_axes=(
+                                element.get('data-pptx-object') == 'connector'
+                                or preset in _CONNECTOR_PRESET_TYPES
+                            ),
+                        )
+                    else:
+                        _validate_dml_shape_matrix(matrix)
+                except ValueError as exc:
+                    elem_id = element.get('id') or '(no id)'
+                    issues.add(
+                        f'<{_local_name(element)} id="{elem_id}"> has '
+                        f'unsupported preset transform: {exc}'
+                    )
+            for child in element:
+                visit(child, matrix)
+
+        visit(root, _IDENTITY_MATRIX)
+        result['errors'].extend(sorted(issues))
+
     def _check_animation_group_ids(self, root: ET.Element, result: Dict):
         """Warn when visible top-level groups cannot be customized."""
         non_visual = {'defs', 'title', 'desc', 'metadata', 'style'}
@@ -1335,9 +1576,54 @@ class SVGQualityChecker:
 
     def _check_native_object_markers(self, root: ET.Element, result: Dict) -> None:
         """Validate opt-in native table/chart markers before PPTX export."""
+        invalid_status_elements: set[ET.Element] = set()
+        for elem in root.iter():
+            if elem.tag.rsplit('}', 1)[-1] == 'metadata':
+                continue
+            has_status = any(
+                elem.get(name) is not None
+                for name in (
+                    'data-pptx-visual-status',
+                    'data-pptx-route-status',
+                    'data-pptx-native-status',
+                )
+            )
+            if not has_status:
+                continue
+            marker_id = elem.get('id') or elem.get('data-name') or '<unnamed>'
+            if (
+                _native_marker_status_errors is None
+                or _native_marker_release_block_reason is None
+            ):
+                result['errors'].append(
+                    "Unable to import native-object status validator; "
+                    f"cannot verify PPTX graphic {marker_id}"
+                )
+                continue
+            status_errors = _native_marker_status_errors(elem)
+            for error in status_errors:
+                result['errors'].append(
+                    f"PPTX graphic {marker_id} has invalid status metadata: {error}"
+                )
+            if status_errors:
+                invalid_status_elements.add(elem)
+                continue
+            if elem.get('data-pptx-route-status') == 'reconstruction-only':
+                route = (
+                    "--native-objects may reconstruct its active native marker"
+                    if (elem.get('data-pptx-native') or '').strip()
+                    else "default export keeps the visible placeholder"
+                )
+                result['warnings'].append(
+                    f"PPTX graphic {marker_id} is a reconstruction-only placeholder; "
+                    f"it has no baked preview and {route}"
+                )
+
         for elem in root.iter():
             status = elem.get('data-pptx-native-status')
             if not status or elem.tag.rsplit('}', 1)[-1] == 'metadata':
+                continue
+            if elem.get('data-pptx-native'):
                 continue
             marker_id = elem.get('id') or elem.get('data-name') or '<unnamed>'
             result['warnings'].append(
@@ -1346,7 +1632,11 @@ class SVGQualityChecker:
 
         markers = [
             elem for elem in root.iter()
-            if elem.get('data-pptx-native') and elem.tag.rsplit('}', 1)[-1] != 'metadata'
+            if (
+                elem.get('data-pptx-native')
+                and elem.tag.rsplit('}', 1)[-1] != 'metadata'
+                and elem not in invalid_status_elements
+            )
         ]
         if not markers:
             return
@@ -1377,6 +1667,7 @@ class SVGQualityChecker:
                     warnings = _validate_native_object_marker_with_warnings(
                         marker,
                         ancestors=ancestors_tuple,
+                        document_root=root,
                     )
                 except RuntimeError as exc:
                     result['errors'].append(
@@ -1401,6 +1692,7 @@ class SVGQualityChecker:
             for warning in _native_object_marker_warnings(
                 marker,
                 ancestors=ancestors_tuple,
+                document_root=root,
             ):
                 result['warnings'].append(
                     f"data-pptx-native marker {marker_id}: {warning}"
@@ -1416,6 +1708,7 @@ class SVGQualityChecker:
         structure_attrs = {
             'data-pptx-layer',
             'data-pptx-layout',
+            'data-pptx-layout-kind',
             'data-pptx-layout-name',
             'data-pptx-placeholder',
             'data-pptx-placeholder-bounds',
@@ -1428,6 +1721,29 @@ class SVGQualityChecker:
             for attr in structure_attrs
         ):
             return
+        if root.get('data-pptx-layout') is not None:
+            layout_kind = (root.get('data-pptx-layout-kind') or '').strip().lower()
+            if layout_kind != 'utility':
+                has_placeholder = any(
+                    elem.get('data-pptx-placeholder') is not None
+                    for elem in root.iter()
+                )
+                has_layout_layer = any(
+                    elem.get('data-pptx-layer') == 'layout'
+                    for elem in root.iter()
+                )
+                if not has_placeholder and not has_layout_layer:
+                    result['warnings'].append(
+                        "Mapped page declares neither a reusable Layout layer nor a "
+                        "placeholder. Use a utility/freeform contract for an unselected "
+                        "page, or distill at least one real reusable design element."
+                    )
+                elif not has_placeholder:
+                    result['warnings'].append(
+                        "Mapped Layout has reusable framing but no insertable placeholder. "
+                        "Keep it only when that static framing is the intended reusable "
+                        "contract."
+                    )
         if _validate_template_structure_svg is None:
             result['warnings'].append(
                 "Detected PPTX template structure metadata, but its validator "
@@ -1801,6 +2117,8 @@ class SVGQualityChecker:
 
     def _categorize_issue(self, error_msg: str) -> str:
         """Categorize issue type"""
+        if error_msg.startswith('[TEXT_'):
+            return 'Text contract'
         if 'Invalid XML' in error_msg:
             return 'XML well-formedness'
         elif 'viewBox' in error_msg:
@@ -1886,6 +2204,7 @@ class SVGQualityChecker:
         """Validate project-level layout reuse and spec_lock mappings."""
         if (
             _load_pptx_structure_lock is None
+            or _parse_optional_layout_slides is None
             or _parse_template_structure_slides is None
             or _template_lock_errors is None
             or _TemplateStructureError is None
@@ -1901,6 +2220,7 @@ class SVGQualityChecker:
         if (
             structure_lock is not None
             and structure_lock.mode == 'template'
+            and structure_lock.layout_strategy == 'distill'
             and structure_lock.template_adherence in {'strict', 'adaptive'}
             and _parse_spec_lock is not None
         ):
@@ -1909,11 +2229,18 @@ class SVGQualityChecker:
             page_layouts = lock.get('page_layouts', {})
             expected_pages = {f'P{index:02d}' for index in range(1, len(svg_files) + 1)}
             missing_pages = sorted(expected_pages - set(page_layouts))
+            extra_pages = sorted(set(page_layouts) - expected_pages)
             if missing_pages:
                 self._pptx_structure_issues.append((
                     'error',
                     'spec_lock.md template export requires page_layouts '
                     'rows for every generated page; missing: ' + ', '.join(missing_pages),
+                ))
+            if target_path.is_dir() and extra_pages:
+                self._pptx_structure_issues.append((
+                    'error',
+                    'spec_lock.md template export page_layouts references absent '
+                    'generated pages: ' + ', '.join(extra_pages),
                 ))
             template_dir = project_path / 'templates'
             template_svgs = {path.stem for path in template_dir.glob('*.svg')}
@@ -1933,6 +2260,7 @@ class SVGQualityChecker:
         structure_attrs = {
             'data-pptx-layer',
             'data-pptx-layout',
+            'data-pptx-layout-kind',
             'data-pptx-layout-name',
             'data-pptx-placeholder',
             'data-pptx-placeholder-bounds',
@@ -1954,7 +2282,81 @@ class SVGQualityChecker:
                 break
         locked_mode = structure_lock.mode if structure_lock is not None else None
         structure_locked = locked_mode in {'template', 'preserve'}
-        if not has_metadata and not structure_locked:
+        standard_project = (
+            not self.template_mode
+            and (project_path / 'svg_output').is_dir()
+        )
+        baseline_mode = not self.template_mode and (
+            locked_mode == 'baseline'
+            or (locked_mode is None and standard_project)
+        )
+        baseline_layout_locked = bool(
+            baseline_mode
+            and structure_lock is not None
+            and structure_lock.layouts
+        )
+        distillation_locked = bool(
+            baseline_mode
+            and structure_lock is not None
+            and structure_lock.layout_strategy == 'distill'
+        )
+        template_distillation_pending = bool(
+            locked_mode == 'template'
+            and structure_lock is not None
+            and structure_lock.layout_strategy == 'distill'
+            and not structure_lock.layouts
+        )
+        if template_distillation_pending:
+            premature_kinds = []
+            for svg_path in svg_files:
+                try:
+                    root = ET.parse(svg_path).getroot()
+                except (OSError, ET.ParseError):
+                    continue
+                if root.get('data-pptx-layout-kind') is not None:
+                    premature_kinds.append(svg_path.name)
+            if premature_kinds:
+                self._pptx_structure_issues.append((
+                    'error',
+                    'template Layout distillation is still pending, but final '
+                    'data-pptx-layout-kind metadata already appears on: '
+                    + ', '.join(premature_kinds),
+                ))
+            if (
+                not premature_kinds
+                and _parse_template_structure_slide is not None
+                and _template_prototype_errors is not None
+            ):
+                try:
+                    pending_specs = [
+                        _parse_template_structure_slide(svg_path, index)
+                        for index, svg_path in enumerate(svg_files, start=1)
+                    ]
+                except _TemplateStructureError as exc:
+                    self._pptx_structure_issues.append(('error', str(exc)))
+                else:
+                    self._pptx_structure_issues.extend(
+                        ('error', message)
+                        for message in _template_prototype_errors(
+                            pending_specs,
+                            structure_lock,
+                            require_complete_roster=target_path.is_dir(),
+                        )
+                    )
+            return
+        if (
+            target_path.is_dir()
+            and distillation_locked
+            and (not baseline_layout_locked or not has_metadata)
+        ):
+            self._pptx_structure_issues.append((
+                'error',
+                'post-design Layout distillation is incomplete: write a complete '
+                'spec_lock.md pptx_layouts mapping and matching root Layout metadata '
+                'for every SVG before the project quality gate',
+            ))
+            return
+        if not has_metadata and not structure_locked and not baseline_layout_locked:
             return
 
         try:
@@ -1962,10 +2364,40 @@ class SVGQualityChecker:
                 if _parse_preserve_structure_slides is None:
                     return
                 specs = _parse_preserve_structure_slides(svg_files)
+            elif baseline_mode:
+                specs = _parse_optional_layout_slides(svg_files)
+                if specs is None:
+                    if structure_lock is not None and structure_lock.layouts:
+                        self._pptx_structure_issues.append((
+                            'error',
+                            'spec_lock.md pptx_layouts requires every baseline SVG '
+                            'root to declare data-pptx-layout and '
+                            'data-pptx-layout-name',
+                        ))
+                    elif has_metadata:
+                        _parse_template_structure_slides(svg_files)
+                    return
             else:
                 specs = _parse_template_structure_slides(svg_files)
         except _TemplateStructureError as exc:
             self._pptx_structure_issues.append(('error', str(exc)))
+            return
+        if baseline_mode:
+            if structure_lock is None or not structure_lock.layouts:
+                self._pptx_structure_issues.append((
+                    'error',
+                    'explicit baseline Layout metadata requires a complete '
+                    'spec_lock.md pptx_layouts mapping',
+                ))
+                return
+            self._pptx_structure_issues.extend(
+                ('error', message)
+                for message in _template_lock_errors(specs, structure_lock)
+            )
+            self._pptx_structure_issues.extend(
+                ('warning', message)
+                for message in self._duplicate_layout_key_warnings(specs)
+            )
             return
         if not structure_locked:
             return
@@ -1973,6 +2405,15 @@ class SVGQualityChecker:
             ('error', message)
             for message in _template_lock_errors(specs, structure_lock)
         )
+        if (
+            locked_mode == 'template'
+            and structure_lock.layout_strategy == 'distill'
+            and _template_prototype_errors is not None
+        ):
+            self._pptx_structure_issues.extend(
+                ('error', message)
+                for message in _template_prototype_errors(specs, structure_lock)
+            )
         if locked_mode != 'preserve':
             return
         if (
@@ -1996,6 +2437,83 @@ class SVGQualityChecker:
                 structure_lock,
                 contract,
             )
+        )
+
+    def _duplicate_layout_key_warnings(self, specs) -> List[str]:
+        """Flag distinct layout keys whose static contracts are identical.
+
+        Keys split by page topic over one shared skeleton compile into
+        duplicate PowerPoint Layouts; the fingerprint compares the
+        id-insensitive layout-layer drawing plus the placeholder contract.
+        """
+        prototypes: Dict[str, Path] = {}
+        for spec in specs:
+            prototypes.setdefault(spec.layout_key, spec.svg_path)
+        if len(prototypes) < 2:
+            return []
+        fingerprint_keys: Dict[tuple, List[str]] = {}
+        for layout_key, svg_path in prototypes.items():
+            fingerprint = self._layout_contract_fingerprint(svg_path)
+            if fingerprint is None:
+                continue
+            fingerprint_keys.setdefault(fingerprint, []).append(layout_key)
+        messages = []
+        for keys in fingerprint_keys.values():
+            if len(keys) < 2:
+                continue
+            joined = ', '.join(sorted(keys))
+            messages.append(
+                f"layout keys {joined} declare identical static Layout framing "
+                "and placeholder contracts; they compile to duplicate Layouts. "
+                "Either merge them into one reusable key (spec_lock.md "
+                "pptx_layouts + each SVG root), or — when their reusable "
+                "contracts genuinely differ — assign distinct explicit default "
+                "placeholder bounds and/or mark only truly stable framing as "
+                'data-pptx-layer="layout". Slide-local content geometry does not '
+                "define a Layout."
+            )
+        return messages
+
+    @staticmethod
+    def _layout_contract_fingerprint(svg_path: Path):
+        """Id-insensitive static contract: layout-layer XML + placeholder slots."""
+        try:
+            root = ET.parse(str(svg_path)).getroot()
+        except (OSError, ET.ParseError):
+            return None
+        layout_kind = (root.get('data-pptx-layout-kind') or '').strip().lower()
+        layout_parts = []
+        placeholder_parts = []
+        for child in list(root):
+            if child.get('data-pptx-layer') == 'layout':
+                clone = copy.deepcopy(child)
+                for elem in clone.iter():
+                    elem.attrib.pop('id', None)
+                xml = ET.tostring(clone, encoding='unicode')
+                layout_parts.append(re.sub(r'\s+', ' ', xml).strip())
+            placeholder = child.get('data-pptx-placeholder')
+            if placeholder is not None:
+                explicit_bounds = child.get('data-pptx-placeholder-bounds') or ''
+                fallback_geometry = ()
+                if not explicit_bounds and layout_kind != 'distilled':
+                    fallback_geometry = (
+                        child.get('data-pptx-text-bounds') or '',
+                        child.get('x') or '',
+                        child.get('y') or '',
+                        child.get('width') or '',
+                        child.get('height') or '',
+                    )
+                placeholder_parts.append((
+                    placeholder,
+                    child.tag.rsplit('}', 1)[-1],
+                    explicit_bounds,
+                    child.get('data-pptx-placeholder-idx') or '',
+                    fallback_geometry,
+                ))
+        return (
+            layout_kind,
+            tuple(layout_parts),
+            tuple(sorted(placeholder_parts)),
         )
 
     def _check_illustration_resource_contract(self, dir_path: Path) -> None:
@@ -2446,6 +2964,14 @@ class SVGQualityChecker:
                     f"{svg_file.name}: reusable templates require root "
                     "data-pptx-layout-name metadata",
                 ))
+            if root.get('data-pptx-layout-kind') is not None:
+                self._template_issues.append((
+                    'error',
+                    'deck_instance_layout_kind',
+                    f"{svg_file.name}: reusable template prototypes must omit "
+                    "data-pptx-layout-kind; downstream completed pages receive "
+                    "distilled/utility during post-design finalization",
+                ))
             has_structure_child = any(
                 child.get('data-pptx-layer') in {'master', 'layout'}
                 or child.get('data-pptx-placeholder')
@@ -2457,6 +2983,20 @@ class SVGQualityChecker:
                     'explicit_structure_empty',
                     f"{svg_file.name}: reusable templates require at least one "
                     "direct master/layout/placeholder declaration",
+                ))
+            missing_bounds = [
+                child.get('id') or child.tag.rsplit('}', 1)[-1]
+                for child in list(root)
+                if child.get('data-pptx-placeholder') is not None
+                and child.get('data-pptx-placeholder-bounds') is None
+            ]
+            if missing_bounds:
+                self._template_issues.append((
+                    'warning',
+                    'placeholder_bounds_missing',
+                    f"{svg_file.name}: newly created reusable templates require "
+                    "explicit design-zone data-pptx-placeholder-bounds; missing: "
+                    + ', '.join(missing_bounds),
                 ))
         if native_contract_path.exists() != source_template_path.exists():
             self._template_issues.append((
@@ -2922,8 +3462,10 @@ class SVGQualityChecker:
             for _sev, kind, msg in warnings:
                 print(f"    [{kind}] {msg}")
         if not errors:
-            print("  No structural roster issues. Placeholder hints above are advisory only;")
-            print("  declare 'placeholders:' frontmatter in design_spec.md to silence them.")
+            print("  No structural roster issues.")
+            print("  Conventional placeholder-name hints may be declared through "
+                  "'placeholders:' frontmatter. Bounds warnings require explicit "
+                  "design-zone metadata; create-template treats them as blocking.")
 
     def _apply_aggregated_issue_counts(self):
         """Mirror project-level aggregate issues into summary counters once."""

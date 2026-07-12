@@ -37,6 +37,7 @@ if __package__ in {None, ''}:
 from .dimensions import CANVAS_FORMATS, get_project_info, get_viewbox_dimensions
 from .discovery import find_svg_files, find_notes_files
 from .builder import create_pptx_with_native_svg
+from ..native_objects.marker_status import native_marker_release_block_reason
 from ..drawingml.theme_colors import ThemeColorError, load_theme_color_spec
 from ..drawingml.theme_fonts import (
     ThemeFontError,
@@ -50,9 +51,11 @@ from .template_structure import (
     load_native_structure_contract,
     load_pptx_structure_lock,
     native_structure_lock_errors,
+    parse_optional_layout_slides,
     parse_preserve_slides,
     parse_template_slides,
     template_lock_errors,
+    template_prototype_errors,
 )
 from ..animation_config import (
     load_animation_config,
@@ -81,6 +84,50 @@ def _native_object_fallbacks(svg_files: list[Path]) -> list[tuple[str, str, str]
             marker_id = elem.get('id') or elem.get('data-name') or '<unnamed>'
             fallbacks.append((svg_path.name, marker_id, status))
     return fallbacks
+
+
+def _release_blocked_graphics(
+    svg_files: list[Path],
+) -> list[tuple[str, str, str]]:
+    """Return graphics whose status metadata is invalid."""
+    blocked: list[tuple[str, str, str]] = []
+    for svg_path in svg_files:
+        try:
+            root = ET.parse(svg_path).getroot()
+        except (OSError, ET.ParseError):
+            continue
+        for elem in root.iter():
+            if elem.tag.rsplit('}', 1)[-1] == 'metadata':
+                continue
+            reason = native_marker_release_block_reason(elem)
+            if reason is None:
+                continue
+            marker_id = elem.get('id') or elem.get('data-name') or '<unnamed>'
+            blocked.append((svg_path.name, marker_id, reason))
+    return blocked
+
+
+def _reconstruction_only_graphics(
+    svg_files: list[Path],
+) -> list[tuple[str, str, bool]]:
+    """Return valid placeholder routes for non-blocking diagnostics."""
+    diagnostics: list[tuple[str, str, bool]] = []
+    for svg_path in svg_files:
+        try:
+            root = ET.parse(svg_path).getroot()
+        except (OSError, ET.ParseError):
+            continue
+        for elem in root.iter():
+            if elem.tag.rsplit('}', 1)[-1] == 'metadata':
+                continue
+            if elem.get('data-pptx-route-status') != 'reconstruction-only':
+                continue
+            if native_marker_release_block_reason(elem) is not None:
+                continue
+            marker_id = elem.get('id') or elem.get('data-name') or '<unnamed>'
+            active_native = bool((elem.get('data-pptx-native') or '').strip())
+            diagnostics.append((svg_path.name, marker_id, active_native))
+    return diagnostics
 
 
 def _recorded_narration_on_click_slides(
@@ -214,8 +261,10 @@ Recorded narration:
                              'conversion decisions for debugging.')
     parser.add_argument('--native-objects', action='store_true', default=False,
                         help='Opt in to converting explicit data-pptx-native table/chart '
-                             'markers into native PowerPoint objects. Default off: marked '
-                             'groups export through their SVG fallback children. When set, '
+                             'markers into editable PowerPoint objects. This editable-first '
+                             'replacement may normalize styling or omit unmodeled marker-local '
+                             'visuals. Default off: marked groups export through their SVG '
+                             'fallback children. When set, '
                              'the default-flow export is named <project>_<ts>_native_charts.pptx '
                              'to tell it apart from a plain shape export.')
     parser.add_argument(
@@ -225,11 +274,13 @@ Recorded narration:
         help=(
             'PPTX structure strategy for native export. When omitted, read '
             'spec_lock.md pptx_structure.mode, falling back to baseline. baseline '
-            'promotes safe repeated background/chrome and extracts conservative '
-            'semantic page-role layout families plus exact family-wide '
-            'structurally marked chrome (legacy filenames/ids remain fallbacks); '
-            'template consumes explicit '
-            'data-pptx-layout/layer/placeholder metadata to build reusable layouts; '
+            'compiles an all-page explicit Layout contract when pptx_layouts and '
+            'matching SVG metadata are present; otherwise it promotes safe repeated '
+            'background/chrome and extracts conservative semantic page-role layout '
+            'families (legacy filenames/ids remain fallbacks); '
+            'template consumes finalized explicit '
+            'data-pptx-layout/layer/placeholder metadata to build reusable layouts '
+            '(a deferred page_layouts prototype contract must be distilled first); '
             'preserve is legacy compatibility for imported source packages; '
             'flat leaves generated structure slide-local for debugging/comparison.'
         ),
@@ -319,19 +370,23 @@ Recorded narration:
     structure_lock = None
     native_structure_contract = None
     pptx_structure = args.pptx_structure
+    if pptx_structure is None or pptx_structure in {'template', 'preserve'}:
+        try:
+            structure_lock = load_pptx_structure_lock(project_path)
+        except TemplateStructureError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
     if pptx_structure is None:
-        try:
-            structure_lock = load_pptx_structure_lock(project_path)
-        except TemplateStructureError as exc:
-            print(f"Error: {exc}", file=sys.stderr)
-            return 1
         pptx_structure = structure_lock.mode if structure_lock else 'baseline'
+    elif (
+        pptx_structure == 'template'
+        and structure_lock is not None
+        and structure_lock.mode != 'template'
+    ):
+        # Keep the explicit diagnostic override for non-template projects, but
+        # never detach a real template project from its pending/ready lock.
+        structure_lock = None
     elif pptx_structure == 'preserve':
-        try:
-            structure_lock = load_pptx_structure_lock(project_path)
-        except TemplateStructureError as exc:
-            print(f"Error: {exc}", file=sys.stderr)
-            return 1
         if structure_lock is None or structure_lock.mode != 'preserve':
             print(
                 "Error: --pptx-structure preserve requires a preserve-mode "
@@ -391,10 +446,98 @@ Recorded narration:
         print("Error: No SVG files found")
         return 1
 
+    structured_baseline = False
+    baseline_layout_specs = None
+    if pptx_structure == 'baseline':
+        try:
+            baseline_layout_specs = parse_optional_layout_slides(native_files)
+        except TemplateStructureError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
+
+        if structure_lock is None:
+            if baseline_layout_specs is not None:
+                try:
+                    structure_lock = load_pptx_structure_lock(project_path)
+                except TemplateStructureError as exc:
+                    print(f"Error: {exc}", file=sys.stderr)
+                    return 1
+            elif args.pptx_structure == 'baseline':
+                # A diagnostic baseline override may bypass a stale or damaged
+                # template/preserve lock. A valid baseline lock remains
+                # authoritative, so its pptx_layouts mapping cannot be silently
+                # downgraded to the unmapped page-role route.
+                try:
+                    candidate_lock = load_pptx_structure_lock(project_path)
+                except TemplateStructureError:
+                    candidate_lock = None
+                if candidate_lock is not None and candidate_lock.mode == 'baseline':
+                    structure_lock = candidate_lock
+
+        locked_layouts = structure_lock.layouts if structure_lock is not None else ()
+        if (
+            structure_lock is not None
+            and structure_lock.layout_strategy == 'distill'
+            and (baseline_layout_specs is None or not locked_layouts)
+        ):
+            print(
+                "Error: post-design Layout distillation is incomplete; add a "
+                "complete spec_lock.md pptx_layouts mapping and matching "
+                "data-pptx-layout metadata before export",
+                file=sys.stderr,
+            )
+            return 1
+        if baseline_layout_specs is None:
+            if locked_layouts:
+                print(
+                    "Error: spec_lock.md pptx_layouts requires every baseline SVG "
+                    "root to declare data-pptx-layout and data-pptx-layout-name",
+                    file=sys.stderr,
+                )
+                return 1
+        else:
+            if not locked_layouts or structure_lock is None:
+                print(
+                    "Error: explicit baseline Layout metadata requires a complete "
+                    "spec_lock.md pptx_layouts mapping",
+                    file=sys.stderr,
+                )
+                return 1
+            lock_errors = template_lock_errors(
+                baseline_layout_specs,
+                structure_lock,
+            )
+            if lock_errors:
+                print(
+                    "Error: PPTX structure does not match spec_lock.md:",
+                    file=sys.stderr,
+                )
+                for message in lock_errors:
+                    print(f"  {message}", file=sys.stderr)
+                return 1
+            structured_baseline = True
+            try:
+                master_text_style_spec = load_master_text_style_spec(project_path)
+            except ThemeFontError as exc:
+                print(f"Error: {exc}", file=sys.stderr)
+                return 1
+
     if (
         pptx_structure in {'template', 'preserve'}
         and structure_lock is not None
     ):
+        if (
+            pptx_structure == 'template'
+            and structure_lock.layout_strategy == 'distill'
+            and not structure_lock.layouts
+        ):
+            print(
+                "Error: template Layout distillation is still pending; run the "
+                "distill-layouts workflow to write the complete pptx_layouts "
+                "mapping and final SVG Layout metadata before export",
+                file=sys.stderr,
+            )
+            return 1
         try:
             template_specs = (
                 parse_preserve_slides(native_files)
@@ -408,6 +551,19 @@ Recorded narration:
         if lock_errors:
             print("Error: PPTX structure does not match spec_lock.md:", file=sys.stderr)
             for message in lock_errors:
+                print(f"  {message}", file=sys.stderr)
+            return 1
+        prototype_errors = template_prototype_errors(
+            template_specs,
+            structure_lock,
+        )
+        if prototype_errors:
+            print(
+                "Error: distilled template structure does not match page_layouts "
+                "prototypes:",
+                file=sys.stderr,
+            )
+            for message in prototype_errors:
                 print(f"  {message}", file=sys.stderr)
             return 1
         if pptx_structure == 'preserve':
@@ -428,7 +584,47 @@ Recorded narration:
                     print(f"  {message}", file=sys.stderr)
                 return 1
 
+    release_blocked = _release_blocked_graphics(native_files)
+    if release_blocked:
+        print(
+            "Error: invalid PPTX graphic status metadata cannot enter an export. "
+            "Correct the reported visual/route/native status attributes first.",
+            file=sys.stderr,
+        )
+        for filename, marker_id, status in release_blocked[:20]:
+            print(f"  {filename}: {marker_id} ({status})", file=sys.stderr)
+        if len(release_blocked) > 20:
+            print(
+                f"  ... and {len(release_blocked) - 20} more",
+                file=sys.stderr,
+            )
+        return 1
+
+    reconstruction_only = _reconstruction_only_graphics(native_files)
+    if reconstruction_only:
+        print(
+            "Warning: reconstruction-only PPTX chart placeholder(s) have no baked "
+            "preview. Default export keeps the placeholder; --native-objects "
+            "reconstructs entries that carry a valid active native marker.",
+            file=sys.stderr,
+        )
+        for filename, marker_id, active_native in reconstruction_only[:20]:
+            route = "active native reconstruction" if active_native else "placeholder fallback"
+            print(f"  {filename}: {marker_id} ({route})", file=sys.stderr)
+        if len(reconstruction_only) > 20:
+            print(
+                f"  ... and {len(reconstruction_only) - 20} more",
+                file=sys.stderr,
+            )
+
     if args.native_objects:
+        print(
+            "Warning: --native-objects is an editable-first replacement route. "
+            "Native charts/tables may normalize styling or omit SVG details that "
+            "are not represented by marker metadata; use the default export when "
+            "exact fallback artwork is required.",
+            file=sys.stderr,
+        )
         fallbacks = _native_object_fallbacks(native_files)
         if fallbacks:
             print(
@@ -748,6 +944,8 @@ Recorded narration:
         image_quality=args.image_quality,
         native_objects=args.native_objects,
         pptx_structure=pptx_structure,
+        structured_baseline=structured_baseline,
+        baseline_layout_specs=baseline_layout_specs,
         native_structure_contract=native_structure_contract,
         theme_font_spec=theme_font_spec,
         master_text_style_spec=master_text_style_spec,
