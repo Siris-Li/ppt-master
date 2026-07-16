@@ -14,7 +14,7 @@ This workflow treats a `.pptx` as the artifact to preserve. It archives the sour
 
 | Rule | Contract |
 |---|---|
-| Source file | If already under `projects/`, move it into the enhancement project; otherwise copy it |
+| Source file | If already under `./.skill/ppt-master/projects/`, move it into the enhancement project; otherwise copy it |
 | Visible slides | Do not rewrite existing text, shapes, images, charts, tables, masters, or layouts |
 | Route | Direct PPTX package patching; no SVG conversion |
 | Output | A new `.pptx` under `<project>/exports/` |
@@ -27,6 +27,11 @@ This workflow treats a `.pptx` as the artifact to preserve. It archives the sour
 - Do not create `svg_output/`
 - Do not run `finalize_svg.py`
 - Do not run `svg_to_pptx.py`
+
+**Hard rule — public entrypoint**: Route and document all new work through
+`native_enhance_pptx.py`. The legacy `native_narration_pptx.py` command remains
+only as a thin CLI compatibility shim; it is not a separate workflow. The core
+continues to accept the legacy `native_narration_pptx_project.v1` project schema.
 
 **OOXML execution model**:
 
@@ -96,7 +101,7 @@ Project layout:
 
 **Validation**: `project.json` contains `schema: native_pptx_enhancement_project.v1`, `kind: native_pptx_enhancement`, and `modules` containing `notes`, `audio`, `timings`, `transitions`.
 
-**Source import rule**: When `<source.pptx>` is inside the repo's `projects/` tree, `init` moves it into `<project>/sources/`. When it is outside `projects/`, `init` copies it into `<project>/sources/`. The mode is recorded in `project.json` as `source_import.mode`.
+**Source import rule**: When `<source.pptx>` is inside the repo's `./.skill/ppt-master/projects/` tree, `init` moves it into `<project>/sources/`. When it is outside `./.skill/ppt-master/projects/`, `init` copies it into `<project>/sources/`. The mode is recorded in `project.json` as `source_import.mode`.
 
 The `init` command also writes:
 

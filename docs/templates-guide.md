@@ -20,7 +20,7 @@ The workflow **defaults to free design** — it will not ask whether you want a 
 
 Send the Brand/Layout/Deck workspace root in your initial message. Anywhere in the sentence is fine; the path just has to be unambiguous:
 
-> "use this template: `skills/ppt-master/templates/layouts/academic_defense/`" ✅
+> "use this template: `skills/ppt-master/templates/layouts/presentation_core/`" ✅
 > "use last deck's template: `projects/last_deck/`" ✅
 > "make a product introduction with `/Users/me/Desktop/our_brand_v3/`" ✅
 
@@ -30,7 +30,7 @@ For every current template kind, the path is the **template workspace root**. St
 
 ### What does NOT trigger the template flow
 
-- **A bare template name without a path**: "use the academic_defense template" / "use the China Merchants Bank template" / "make a pixel_retro defense deck" → free design. The AI does not look the name up. You must give a path.
+- **A bare template name without a path**: "use the presentation_core template" / "use the China Telecom template" → free design. The AI does not look the name up. You must give a path.
 - **Style descriptions**: "McKinsey style" / "Google style" / "minimalist" / "Keynote style" → free design. The descriptive words flow into Strategist as a style brief, but no template is copied.
 - **Vague intent**: "I want a template" with no path → free design.
 
@@ -43,8 +43,8 @@ To browse what's available in the built-in library, ask "what templates are avai
 Templates are organized into three kinds, each in its own directory:
 
 - [`templates/brands/README.md`](../skills/ppt-master/templates/brands/README.md) — identity-only presets (color / typography / logo / voice / icon style), no SVG pages; Anthropic, Google
-- [`templates/layouts/README.md`](../skills/ppt-master/templates/layouts/README.md) — structure-only patterns (canvas / page structure / page types / SVG roster), no identity; academic_defense, government_blue/red, ai_ops, medical_university, pixel_retro, psychology_attachment
-- [`templates/decks/README.md`](../skills/ppt-master/templates/decks/README.md) — full identity + structure references (including the middle segment); China Merchants Bank, Power Construction Corporation of China, Chongqing University, China Telecom
+- [`templates/layouts/README.md`](../skills/ppt-master/templates/layouts/README.md) — structure-only patterns (canvas / page structure / page types / SVG roster), no identity; presentation_core
+- [`templates/decks/README.md`](../skills/ppt-master/templates/decks/README.md) — full identity + structure references (including the middle segment); CATARC and China Telecom
 
 Full data model + fusion / conflict-resolution rules: [`docs/zh/templates-architecture.md`](./zh/templates-architecture.md) (Chinese only for now).
 
@@ -65,7 +65,7 @@ A **style** is a description ("minimalist" / "Keynote-style" / "editorial") — 
 | Locked values | Yes — values come from the template's `design_spec.md` | No — Strategist invents values that fit the deck |
 | Best for | Brand-locked decks; scenarios with strong visual conventions | When you have a feel in mind but no specific brand commitment |
 
-A style mention may resemble a template name (e.g., "academic style" sounds like the `academic_defense/` template directory), but they go through different machinery — a template requires a real path the AI can copy from, a style mention is interpretive language. Similar words, different paths in the most literal sense.
+A style description and a template name still go through different machinery: "minimalist" is interpretive language, while `presentation_core/` is a real template directory that requires an explicit path.
 
 ### Common styles you can describe
 
@@ -103,7 +103,7 @@ Three axes, freely combinable ("dark tech + minimalist" or "magazine + neo-Chine
 | **Memphis / pop** | High-saturation blocks, geometric, 80s |
 | **Cyberpunk / vaporwave** | Neon purple-pink, grids, dreamlike |
 
-When you describe a style, the AI doesn't pick a template — it interprets the words and lands them in Layer 2 of confirmation `d` (Style Objective) inside Strategist's confirmation stage, which then drives e (color), f (icon), g (typography), and h (image). You confirm or refine. If the style you want happens to match one of our built-in templates (e.g., `academic_defense` / `pixel_retro` / `psychology_attachment`), you have a choice: send the template's directory path for locked values, or describe the style for AI-interpreted values that adapt to your deck content.
+When you describe a style, the AI doesn't pick a template — it interprets the words and lands them in Layer 2 of confirmation `d` (Style Objective) inside Strategist's confirmation stage, which then drives e (color), f (icon), g (typography), and h (image). You confirm or refine. To use the built-in `presentation_core` structure, send its workspace path; to keep structure free, describe only the style and let the AI adapt it to the deck content.
 
 ---
 
@@ -152,7 +152,7 @@ The workflow does not silently infer values — before generation it lists these
 
 After confirmation the workflow echoes the finalized brief and emits the marker `[TEMPLATE_BRIEF_CONFIRMED]`. Subsequent steps only run after that marker. **This is a hard gate — no brief, no generation.**
 
-Before either scope writes final files, one hard preflight resolves the required `templates/` destination and any optional asset destinations, requires an empty `templates/` root, and rejects bitmap or icon filename collisions in `images/`, `icons/`, and `templates/icons/`. It checks `exports/` only when a review PPTX was requested. Project scope additionally requires an initialized target project. A failed check stops before partial output; the workflow does not merge or overwrite.
+Before either scope writes final files, one hard preflight resolves the required `templates/` destination and any optional asset destinations, requires an empty `templates/` root, and rejects bitmap or imported-vector filename collisions in `images/` and `icons/imported/`. It checks `exports/` only when a review PPTX was requested. Project scope additionally requires an initialized target project. A failed check stops before partial output; the workflow does not merge or overwrite.
 
 > Why so strict? A template is a structural contract, whether it is reused globally or only inside the current project. Confirming ownership and geometry first avoids partial or misplaced output.
 
@@ -172,9 +172,23 @@ This is the most easily confused decision when deriving a template.
 
 **About sprite sheets**: PPTX-exported assets are often a single large image referenced from multiple slides, each cropping a different region via nested `<svg viewBox=...>` wrappers. In `fidelity` and `mirror` modes this nesting must be preserved — you cannot flatten it to a bare `<image>`, or the crop is lost and the page misaligns. The workflow validates this automatically.
 
-**About native PowerPoint shapes**: the lossless import SVG stays in the temporary analysis workspace, while the model works from a lightweight projection that omits opaque payload and duplicate hidden carriers. The projection is never an export source. Authored modes use compact canonical metadata. Mirror may reuse converter-supported metadata on unchanged Slide-local/slot objects; fixed Master/Layout layers remain direct atoms, and unsupported or edited objects keep the current SVG fallback.
+**About native PowerPoint shapes**: the lossless import SVG stays immutable in the temporary analysis workspace as native-payload backing. Template creation uses the lightweight editable `authoring-svg/` IR and its source-ref/hash manifest. Authored modes use project-canonical SVG and compact authored-preset groups only for exact registered preset matches. Mirror materializes final template SVGs from the IR, reusing converter-supported payload only for unchanged Slide-local/slot refs; fixed Master/Layout layers remain direct atoms, unsupported or edited objects keep the current SVG fallback, and final templates contain no IR-only refs.
 
-**Current mirror boundary**: every source Layout must be used by at least one source slide, and every source Master must be reachable through those Layouts. The structured template roster cannot yet materialize an unused picker-only identity without inventing an extra page, so preflight reports the exact unused identities and stops instead of silently dropping them.
+For a PPTX-backed Type A mirror, that final step is one deterministic command:
+
+```bash
+python3 skills/ppt-master/scripts/mirror_template_materialize.py \
+  "<import_workspace>" "<empty_template_workspace>"
+```
+
+It validates the IR manifest, immutable source hashes, complete native graph,
+visibility facts, and imported-vector closure before atomically publishing the
+source-ordered SVG roster and its `icons/imported/` / `images/` assets. It never
+requires or uses the opt-in `svg-flat/` verification tree as the template source
+and never generates `design_spec.md`;
+the designer writes that brief against the published roster.
+
+**Mirror graph boundary**: mirror preserves the complete supported source Master/Layout graph. It emits one complete prototype per source slide and one definition-only `layout_<layout_key>.svg` prototype for every source Layout unused by those slides. The latter registers in PowerPoint through the independent Layout roster without becoming a published page; its parent Master is retained with it. Preflight stops only when required source facts or supported geometry are missing, never merely because a Layout is unused.
 
 **How mirror is consumed**: the Strategist picks one mirror page per project page, and the Executor copies that complete SVG and edits visible text in place while preserving decoration, sprite crops, geometry, and the normalized structured declarations. Mirror preserves supported appearance, not the source PPTX group-editing hierarchy.
 
@@ -203,16 +217,16 @@ Library and project scopes use the same core structure; substitute either `skill
 ├── templates/
 │   ├── design_spec.md
 │   ├── 01_cover.svg
-│   ├── 02_chapter.svg
-│   ├── 02_toc.svg              # optional
-│   ├── 03_content.svg
-│   ├── 03a_content_two_col.svg # fidelity variant
-│   ├── 04_ending.svg
-│   └── icons/                  # package/validation copy when used
+│   ├── 02_toc.svg              # optional; without it: 02_chapter, 03_content, 04_ending
+│   ├── 03_chapter.svg
+│   ├── 04_content.svg
+│   ├── 04a_content_two_col.svg # fidelity variant
+│   └── 05_ending.svg
 ├── images/                         # optional
 │   └── *.png / *.jpg           # SVG references use ../images/<name>
 ├── icons/                          # optional
-│   └── *.svg                   # runtime copy of extracted vectors
+│   └── imported/
+│       └── *.svg               # one canonical copy of imported vectors
 └── exports/                        # optional; on-demand review output
     └── <id>_template_preview.pptx
 ```
@@ -220,6 +234,11 @@ Library and project scopes use the same core structure; substitute either `skill
 `standard` and `fidelity` SVGs use a unified authoring-placeholder vocabulary (`{{TITLE}}`, `{{CHAPTER_TITLE}}`, `{{PAGE_TITLE}}`, `{{CONTENT_AREA}}`, ...). Each native slot is a top-level `<g>` with semantic type and positive bounds; a normal slot contains exactly one carrier. Fixed Master/Layout visuals are direct root atoms and never layer `<g>` elements. A Layout may intentionally expose zero slots.
 
 A `mirror` workspace uses the same tree but places its source-ordered `001_cover.svg`, `002_toc.svg`, … files under `templates/`. It may keep literal example text instead of `{{...}}` markers, while imported native slots still carry semantic metadata.
+
+Imported vector placeholders use `data-icon="imported/<name>"`. Validation,
+preview export, and final export all resolve the same workspace-root asset at
+`icons/imported/<name>.svg`; a second `templates/icons/` copy is neither needed
+nor allowed.
 
 ### Library registration vs project placement
 

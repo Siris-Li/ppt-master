@@ -53,7 +53,7 @@ If the content material is only a topic with no supporting facts, gather or ask 
 
 ## Step 2: Create the Project Workspace
 
-Create a dedicated project directory under `projects/`. Do not write outputs directly into `projects/` root. Reuse the standard project manager so source import rules stay consistent with the rest of the repository:
+Create a dedicated project directory under `./.skill/ppt-master/projects/`. Do not write outputs directly into `./.skill/ppt-master/projects/` root. Reuse the standard project manager so source import rules stay consistent with the rest of the repository:
 
 ```bash
 python3 skills/ppt-master/scripts/project_manager.py init "<project_name>" --format ppt169

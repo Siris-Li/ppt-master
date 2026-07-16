@@ -60,11 +60,13 @@ Use this evidence priority:
 | 2 | Legacy template SVGs or explicit legacy structure metadata | Preserve stable identities and reusable geometry after removing legacy-only fields |
 | 3 | Completed SVG pages only | Classify deliberately across the full deck; do not let the exporter infer structure |
 
-**Hard rule — reachable native graph only**: The current structured contract
-materializes Master/Layout identities through output-page references. If native
-evidence contains a Layout unused by every output page, or a Master reachable
-only through such Layouts, stop and list the exact identities. Do not silently
-drop them, synthesize a carrier page, or claim full source-graph restoration.
+**Hard rule — complete native graph**: Preserve every supported native Layout,
+including one unused by every output page. Create a definition-only
+`layout_<layout_key>.svg` prototype for each otherwise unrepresented Layout and
+record it in the unique `pptx_layouts` roster with a
+`template:<basename>` source. A Master reachable only through such Layouts is
+retained through their parent relationship. Do not silently drop identities or
+synthesize a generated carrier page.
 
 **Hard rule**: Decide from SVG/lock semantics, never from whether `design_spec.md` is at the workspace root or under `templates/`.
 
@@ -81,7 +83,7 @@ Classify each visible object:
 
 **Hard rule — no visual redesign**: Do not change wording, geometry, paint, assets, or z-order except for the normalization required to flatten a fixed Master/Layout group. Render before and after any transform-flattening edit and require pixel equivalence.
 
-**Hard rule — native metadata below structural layers**: Keep the complete lossless import artifact in the backup/evidence set. An unchanged imported shape may keep the source metadata already supported by the converter when it remains Slide-local or inside a slot; no additional opt-in marker exists. A logical `<g>` cannot become Master/Layout because those layers require direct atoms. Normalize fixed-layer objects into direct atom(s), rebuilding a preset when supported and otherwise keeping the current SVG fallback. Any geometry, paint, text, or fingerprint change invalidates stale source metadata. `data-pptx-native` remains reserved for chart/table markers.
+**Hard rule — native metadata below structural layers**: Keep the complete lossless import artifact in the backup/evidence set. An unchanged imported shape may keep the source metadata already supported by the converter when it remains Slide-local or inside a slot; no additional opt-in marker exists. A logical `<g>` cannot become Master/Layout because those layers require direct atoms. Normalize fixed-layer objects into direct atom(s), rebuilding a preset when supported and otherwise keeping the current SVG fallback. Any geometry, paint, text, or fingerprint change invalidates stale source metadata. `data-pptx-replace-with` remains reserved for optional PowerPoint-native Chart/Table replacement markers.
 
 ---
 
@@ -148,11 +150,15 @@ After every SVG has its final metadata, replace the legacy structure sections as
 - master-default: Default Master
 
 ## pptx_layouts
-- P01: master-default | cover-visual | Cover Visual
-- P02: master-default | content-two-column | Two Column
+- cover-visual: master-default | Cover Visual | P01
+- content-two-column: master-default | Two Column | P02
+
+## page_pptx_layouts
+- P01: cover-visual
+- P02: content-two-column
 ```
 
-**Hard rule**: `pptx_masters` contains every referenced Master key exactly once. `pptx_layouts` contains exactly one row for every generated page. Each row must match that page root's Master key, Layout key, and Layout name.
+**Hard rule**: `pptx_masters` contains every Master key exactly once. `pptx_layouts` contains every unique reusable Layout exactly once and declares its Master, picker name, and definition source. `page_pptx_layouts` contains exactly one assignment for every generated page. Each page root must match its assigned Layout definition. A Layout unused by generated pages uses `template:<basename>` as its definition source.
 
 **Layout identity**: A Layout key is globally unique. Pages may reuse it only when their Layout atoms and slot id/type/index/bounds/binding/carrier contracts are identical. The same display name under two Masters still uses two different keys.
 
