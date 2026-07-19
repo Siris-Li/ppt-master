@@ -4,8 +4,12 @@
 Usage:
     python3 scripts/project_manager.py init <project_name> [--format ppt169] [--dir <path>]  (default: .skill/ppt-master/projects)
     python3 scripts/project_manager.py import-sources <project_path> <source1> [<source2> ...] [--move | --copy]
+    python3 scripts/project_manager.py scaffold-spec <project_path>
+    python3 scripts/project_manager.py scaffold-lock <project_path>
     python3 scripts/project_manager.py validate <project_path>
     python3 scripts/project_manager.py info <project_path>
+    python3 scripts/project_manager.py page-context <project_path> P07 [--record-usage]
+    python3 scripts/project_manager.py page-context-report <project_path>
 """
 
 from __future__ import annotations
@@ -23,6 +27,13 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from console_encoding import configure_utf8_stdio
+from page_context import (
+    build_page_context,
+    page_context_usage_report,
+    record_page_context_usage,
+    render_page_context,
+)
+from project_specs import scaffold_project_artifact, validate_project_artifacts
 
 try:
     from project_utils import (
@@ -116,6 +127,10 @@ class ProjectManager:
         # fork 定制: 默认落到项目本地 .skill/ppt-master/projects（上游默认 cwd/projects）
         self.base_dir = Path(base_dir) if base_dir is not None else Path.cwd() / ".skill/ppt-master/projects"
 
+    def scaffold_artifact(self, project_path: str, artifact: str) -> str:
+        """Delegate deterministic Markdown scaffold rendering."""
+        return scaffold_project_artifact(Path(project_path), artifact)
+
     def init_project(
         self,
         project_name: str,
@@ -155,6 +170,7 @@ class ProjectManager:
             "live_preview",
             SOURCE_DIRNAME,
             "analysis",
+            "validation",
             "exports",
         ):
             (project_path / rel_path).mkdir(parents=True, exist_ok=True)
@@ -176,7 +192,8 @@ class ProjectManager:
                 "- `live_preview/`: browser preview runtime files and history (lock.json, server.log, edits.jsonl, annotations.jsonl)\n"
                 "- `sources/`: source materials and normalized markdown\n"
                 "- `analysis/`: machine-extracted intermediate analysis (PPTX intake, image_analysis.csv) — the pipeline's canonical must-read source/asset facts\n"
-                "- `exports/`: native DrawingML pptx (timestamped); `_native_charts_tables.pptx` name with `--native-charts-and-tables`, `_narrated.pptx` name when narration audio is embedded\n"
+                "- `validation/`: SVG quality reports and PPTX postflight audit reports\n"
+                "- `exports/`: final native DrawingML pptx deliverables only (timestamped); `_native_charts_tables.pptx` name with `--native-charts-and-tables`, `_narrated.pptx` name when narration audio is embedded\n"
                 "- `backup/<timestamp>/`: svg_output/ archive (always written in default-flow mode; safe to delete old timestamps)\n"
             ),
             encoding="utf-8",
@@ -845,7 +862,19 @@ class ProjectManager:
 
     def validate_project(self, project_path: str) -> tuple[bool, list[str], list[str]]:
         project_path_obj = Path(project_path)
-        is_valid, errors, warnings = validate_project_structure(str(project_path_obj))
+        _, errors, warnings = validate_project_structure(
+            str(project_path_obj),
+            validate_communication=False,
+        )
+
+        if project_path_obj.exists() and project_path_obj.is_dir():
+            project_info = get_project_info_common(str(project_path_obj))
+            artifact_errors, artifact_warnings = validate_project_artifacts(
+                project_path_obj,
+                project_info,
+            )
+            errors.extend(artifact_errors)
+            warnings.extend(artifact_warnings)
 
         if project_path_obj.exists() and project_path_obj.is_dir():
             info = get_project_info_common(str(project_path_obj))
@@ -856,7 +885,7 @@ class ProjectManager:
                     expected_format = None
                 warnings.extend(validate_svg_viewbox(svg_files, expected_format))
 
-        return is_valid, errors, warnings
+        return not errors, list(dict.fromkeys(errors)), warnings
 
     def get_project_info(self, project_path: str) -> dict[str, object]:
         shared = get_project_info_common(project_path)
@@ -881,8 +910,12 @@ def build_parser() -> argparse.ArgumentParser:
         epilog="""Examples:
   python3 scripts/project_manager.py init demo --format ppt169
   python3 scripts/project_manager.py import-sources projects/demo file.md --move
+  python3 scripts/project_manager.py scaffold-spec projects/demo_ppt169_20260718
+  python3 scripts/project_manager.py scaffold-lock projects/demo_ppt169_20260718
   python3 scripts/project_manager.py validate projects/demo
   python3 scripts/project_manager.py info projects/demo
+  python3 scripts/project_manager.py page-context projects/demo P07 --record-usage
+  python3 scripts/project_manager.py page-context-report projects/demo
 """,
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -902,11 +935,51 @@ def build_parser() -> argparse.ArgumentParser:
     mode.add_argument("--move", action="store_true", help="Move local source files")
     mode.add_argument("--copy", action="store_true", help="Copy local source files")
 
+    scaffold_spec = subparsers.add_parser(
+        "scaffold-spec",
+        help="Create design_spec.md from the versioned scaffold",
+    )
+    scaffold_spec.add_argument("project_path", help="Project directory")
+
+    scaffold_lock = subparsers.add_parser(
+        "scaffold-lock",
+        help="Create spec_lock.md from the versioned scaffold",
+    )
+    scaffold_lock.add_argument("project_path", help="Project directory")
+
     validate = subparsers.add_parser("validate", help="Validate a project directory")
     validate.add_argument("project_path", help="Project directory")
 
     info = subparsers.add_parser("info", help="Print project metadata")
     info.add_argument("project_path", help="Project directory")
+
+    page_context = subparsers.add_parser(
+        "page-context",
+        help="Print one deterministic per-page execution view",
+    )
+    page_context.add_argument("project_path", help="Project directory")
+    page_context.add_argument("page", help="Positive page key such as P07")
+    page_context.add_argument(
+        "--bundle",
+        action="store_true",
+        help="Deprecated compatibility flag; output remains compact",
+    )
+    page_context.add_argument(
+        "--pretty",
+        action="store_true",
+        help="Pretty-print the page-context JSON payload",
+    )
+    page_context.add_argument(
+        "--record-usage",
+        action="store_true",
+        help="Write compact-output token telemetry under analysis/page-context/",
+    )
+
+    page_context_report = subparsers.add_parser(
+        "page-context-report",
+        help="Summarize fresh per-page context telemetry",
+    )
+    page_context_report.add_argument("project_path", help="Project directory")
     return parser
 
 
@@ -964,6 +1037,16 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"  - {item}")
             return 0
 
+        if args.command == "scaffold-spec":
+            artifact_path = manager.scaffold_artifact(args.project_path, "design_spec")
+            print(f"[OK] Design spec scaffold created: {artifact_path}")
+            return 0
+
+        if args.command == "scaffold-lock":
+            artifact_path = manager.scaffold_artifact(args.project_path, "spec_lock")
+            print(f"[OK] Execution lock scaffold created: {artifact_path}")
+            return 0
+
         if args.command == "validate":
             project_path = args.project_path
             is_valid, errors, warnings = manager.validate_project(project_path)
@@ -1004,6 +1087,33 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Source count: {info['source_count']}")
             print(f"Canvas format: {info['canvas_format']}")
             print(f"Created: {info['create_date']}")
+            return 0
+
+        if args.command == "page-context":
+            result = build_page_context(args.project_path, args.page)
+            output, measured_reads = render_page_context(
+                result,
+                bundle=args.bundle,
+                pretty=args.pretty,
+            )
+            if args.record_usage:
+                _usage_path, token_status = record_page_context_usage(
+                    result,
+                    output,
+                    measured_reads,
+                )
+                if token_status != "exact":
+                    print(
+                        "[WARN] tiktoken/o200k_base unavailable; recorded bytes "
+                        "and hashes without token counts",
+                        file=sys.stderr,
+                    )
+            print(output, end="")
+            return 0
+
+        if args.command == "page-context-report":
+            report = page_context_usage_report(args.project_path)
+            print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0
 
         parser.error(f"Unknown command: {args.command}")
