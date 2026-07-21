@@ -146,4 +146,4 @@ The Research Brief is evidence-facing context, not a locked presentation contrac
   `project_manager.py import-sources ./.skill/ppt-master/projects/<project_name> ./.skill/ppt-master/projects/<topic_slug>.md ./.skill/ppt-master/projects/<topic_slug>.facts.json ./.skill/ppt-master/projects/<topic_slug>/*.* --move`
 ```
 
-`<project_name>` is the user's chosen project identifier (typically `<format>_<topic_slug>`, e.g. `ppt169_joe_hisaishi`); `--move` removes the research artifacts from `./.skill/ppt-master/projects/<topic_slug>` after they are imported.
+`<project_name>` is the user's chosen project identifier (typically `<format>_<topic_slug>`, e.g. `ppt169_joe_hisaishi`); `--move` removes the research artifacts from `./.skill/ppt-master/projects/<topic_slug>` after they are imported and deletes the folder itself once it is empty.
