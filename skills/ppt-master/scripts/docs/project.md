@@ -22,6 +22,7 @@ python3 scripts/project_manager.py page-context-report <project_path>
 ```
 
 Notes:
+- `init --quick-generate`: only `svg_output/`; no README
 - Files outside `./.skill/ppt-master/projects/` are always copied into `sources/`
 - `--move` applies only to sources under the repository's `./.skill/ppt-master/projects/` tree
 - A directly supplied supported bitmap is also copied into `images/` with a
