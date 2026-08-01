@@ -27,11 +27,12 @@ Always-loaded Executor authority for flat SVG page authoring and behavior shared
 
 ## 1. Effect Capability Discovery
 
-**Mandatory — select by visual job**: before authoring each page, run the
-already-loaded [`svg-effects.md`](./svg-effects.md) §6.1 procedure and use its
-§6.13 scenario routing. The catalog expands construction vocabulary; it does
-not create an effect quota. Active cross-page continuous action additionally
-loads [`animations.md`](./animations.md) §3.1 before authoring both endpoints.
+**Mandatory — select by visual job**: establish each page's semantic skeleton,
+then run the already-loaded [`svg-effects.md`](./svg-effects.md) §6.1 procedure
+and Visual Job Router before finalizing; use §6.13 for a coordinated page
+recipe when useful. The catalog expands construction vocabulary; it creates no
+effect quota. Active cross-page continuous action additionally loads
+[`animations.md`](./animations.md) §3.1 before authoring both endpoints.
 
 **Hard rule — discovery does not expand compatibility**: Follow
 `svg-effects.md` syntax and fallbacks; unsupported source/backdrop blur, blend
@@ -222,9 +223,7 @@ redirect, loop, or batch helper output into `svg_output/`.
 
 ### SVG File Naming Convention
 
-Format: `<NN>_<page_name>.svg` (two-digit number from 01; name matches the deck's language and the page title in the Design Spec).
-
-Examples: `01_封面.svg` / `02_目录.svg` / `03_核心优势.svg`; `01_cover.svg` / `02_agenda.svg` / `03_key_benefits.svg`.
+Format: `<index>_<page_name>.svg`. Use one roster-wide zero-padded index width sized for the Design Spec §IX roster, such as `01_cover.svg` through `12_end.svg` or `001_cover.svg` through `120_end.svg`; match the deck language and page title.
 
 ---
 
